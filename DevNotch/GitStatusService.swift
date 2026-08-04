@@ -1,0 +1,231 @@
+import Foundation
+import AppKit
+import Combine
+
+struct GitStatus: Equatable {
+    var branch: String = ""
+    var uncommittedChanges: Int = 0
+    var lastTag: String = ""
+    var repoPath: String = ""
+    var isValidRepo: Bool = false
+}
+
+final class GitStatusService: ObservableObject {
+    @Published private(set) var status = GitStatus()
+
+    private let xcodeBundleID = "com.apple.dt.Xcode"
+    private let terminalBundleIDs: Set<String> = ["com.apple.Terminal"]
+
+    private var currentRepoPath: String?
+    private var eventStream: FSEventStreamRef?
+    private var refreshWorkItem: DispatchWorkItem?
+    private let gitQueue = DispatchQueue(label: "devnotch.git", qos: .utility)
+
+    private var workspaceObserver: NSObjectProtocol?
+    private var safetyNetTimer: Timer?
+
+    private var didStart = false
+
+    init() {}
+
+    func start() {
+        guard !didStart else { return }
+        didStart = true
+
+        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.recomputeActiveRepo()
+        }
+
+        safetyNetTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
+            self?.recomputeActiveRepo()
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.recomputeActiveRepo()
+        }
+    }
+
+    deinit {
+        if let observer = workspaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        safetyNetTimer?.invalidate()
+        stopWatchingRepo()
+    }
+
+    private func recomputeActiveRepo() {
+        guard let frontApp = NSWorkspace.shared.frontmostApplication,
+              let bundleID = frontApp.bundleIdentifier else { return }
+
+        guard bundleID == xcodeBundleID || terminalBundleIDs.contains(bundleID) else {
+            return
+        }
+        let terminalPID = frontApp.processIdentifier
+
+        gitQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            let resolvedPath: String? = bundleID == self.xcodeBundleID
+                ? self.resolveXcodeRepoPath()
+                : self.resolveTerminalRepoPath(terminalPID: terminalPID)
+
+            guard let path = resolvedPath, path != self.currentRepoPath else { return }
+
+            self.currentRepoPath = path
+            self.watchRepo(at: path)
+            self.refreshStatus(at: path)
+        }
+    }
+
+    private func resolveTerminalRepoPath(terminalPID: pid_t) -> String? {
+        guard let shellPID = ProcessInspector.findShellPID(startingAt: terminalPID),
+              let cwd = ProcessInspector.currentWorkingDirectory(of: shellPID) else {
+            return nil
+        }
+        return findRepoRoot(startingAt: URL(fileURLWithPath: cwd)) ?? cwd
+    }
+
+    private func resolveXcodeRepoPath() -> String? {
+        let script = """
+        tell application "Xcode"
+            if not (exists active workspace document) then return ""
+            return path of active workspace document
+        end tell
+        """
+
+        var error: NSDictionary?
+        guard let scriptObject = NSAppleScript(source: script) else { return nil }
+        let output = scriptObject.executeAndReturnError(&error)
+
+        if error != nil { return nil }
+
+        guard let projectPath = output.stringValue, !projectPath.isEmpty else { return nil }
+
+        let projectURL = URL(fileURLWithPath: projectPath)
+        return findRepoRoot(startingAt: projectURL.deletingLastPathComponent())
+    }
+
+    private func findRepoRoot(startingAt url: URL, maxLevels: Int = 6) -> String? {
+        var current = url
+        for _ in 0..<maxLevels {
+            let gitDir = current.appendingPathComponent(".git")
+            if FileManager.default.fileExists(atPath: gitDir.path) {
+                return current.path
+            }
+            let parent = current.deletingLastPathComponent()
+            if parent.path == current.path { break }
+            current = parent
+        }
+        return nil
+    }
+
+    private func watchRepo(at path: String) {
+        stopWatchingRepo()
+
+        let gitDir = (path as NSString).appendingPathComponent(".git")
+        guard FileManager.default.fileExists(atPath: gitDir) else {
+            DispatchQueue.main.async { self.status = GitStatus(repoPath: path) }
+            return
+        }
+
+        var context = FSEventStreamContext(
+            version: 0,
+            info: Unmanaged.passUnretained(self).toOpaque(),
+            retain: nil,
+            release: nil,
+            copyDescription: nil
+        )
+
+        let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
+            guard let info = info else { return }
+            let service = Unmanaged<GitStatusService>.fromOpaque(info).takeUnretainedValue()
+            service.scheduleRefresh()
+        }
+
+        let stream = FSEventStreamCreate(
+            kCFAllocatorDefault,
+            callback,
+            &context,
+            [gitDir] as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            0.3,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
+        )
+
+        guard let stream = stream else { return }
+        FSEventStreamSetDispatchQueue(stream, gitQueue)
+        FSEventStreamStart(stream)
+        eventStream = stream
+    }
+
+    private func stopWatchingRepo() {
+        guard let stream = eventStream else { return }
+        FSEventStreamStop(stream)
+        FSEventStreamInvalidate(stream)
+        FSEventStreamRelease(stream)
+        eventStream = nil
+    }
+
+    private func scheduleRefresh() {
+        refreshWorkItem?.cancel()
+        guard let path = currentRepoPath else { return }
+        let item = DispatchWorkItem { [weak self] in
+            self?.refreshStatus(at: path)
+        }
+        refreshWorkItem = item
+        gitQueue.asyncAfter(deadline: .now() + 0.2, execute: item)
+    }
+
+    private func refreshStatus(at path: String) {
+        gitQueue.async { [weak self] in
+            guard let self = self else { return }
+
+            var result = GitStatus(repoPath: path)
+
+            let isRepo = self.run("git rev-parse --is-inside-work-tree", at: path)
+            guard isRepo == "true" else {
+                DispatchQueue.main.async { self.status = result }
+                return
+            }
+            result.isValidRepo = true
+
+            let statusOutput = self.run("git status --porcelain=v1 -b", at: path)
+            let lines = statusOutput.split(separator: "\n", omittingEmptySubsequences: true)
+
+            if let firstLine = lines.first {
+                let branchInfo = firstLine.dropFirst(min(3, firstLine.count))
+                result.branch = branchInfo.split(separator: ".").first.map(String.init) ?? String(branchInfo)
+            }
+            result.uncommittedChanges = max(0, lines.count - 1)
+
+            let tag = self.run("git describe --tags --abbrev=0", at: path)
+            result.lastTag = tag.isEmpty ? "brak tagów" : tag
+
+            DispatchQueue.main.async { self.status = result }
+        }
+    }
+
+    private func run(_ command: String, at path: String) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: path)
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        } catch {
+            return ""
+        }
+    }
+}
