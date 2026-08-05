@@ -33,6 +33,7 @@ final class BuildMonitorService: ObservableObject {
     private var trackedRunPID: pid_t?
     private var buildFinishedWithoutRunAt: Date?
     private let runDetectionGracePeriod: TimeInterval = 5
+    private var lastChildSeenAt: Date?
 
     init() {}
 
@@ -61,13 +62,19 @@ final class BuildMonitorService: ObservableObject {
 
             if let buildServicePID = self.findBuildServicePID(in: plainSnapshot) {
                 let subtree = self.collectSubtreePIDs(root: buildServicePID, in: plainSnapshot)
+                
                 let relevant = resourceSnapshot.filter { subtree.contains($0.pid) }
                 let totalCPU = relevant.reduce(0.0) { $0 + $1.cpuPercent }
                 let totalMemoryMB = Double(relevant.reduce(0) { $0 + $1.residentMemoryKB }) / 1024.0
 
                 let hasExtraChildren = subtree.count > 1
+                if hasExtraChildren {
+                    lastChildSeenAt = Date()
+                }
+
+                let recentlySawChild = lastChildSeenAt.map { Date().timeIntervalSince($0) < 2.0 } ?? false
                 let rootCPU = resourceSnapshot.first(where: { $0.pid == buildServicePID })?.cpuPercent ?? 0
-                compilingNow = hasExtraChildren || rootCPU > 3.0
+                compilingNow = recentlySawChild && rootCPU > 3.0
 
                 sample = BuildResourceSample(
                     totalCPUPercent: totalCPU,
@@ -90,7 +97,6 @@ final class BuildMonitorService: ObservableObject {
             trackedRunPID = nil
             buildFinishedWithoutRunAt = nil
         }
-
         guard status.isBuilding else { return }
 
         if let sample = sample {
