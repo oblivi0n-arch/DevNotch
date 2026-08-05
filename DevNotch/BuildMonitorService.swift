@@ -7,7 +7,8 @@ struct BuildStatus: Equatable {
     var startedAt: Date? = nil
 }
 
-struct BuildResourceSample: Equatable {
+struct BuildResourceSample: Equatable, Identifiable {
+    let id = UUID()
     var totalCPUPercent: Double = 0
     var totalMemoryMB: Double = 0
     var timestamp: Date = Date()
