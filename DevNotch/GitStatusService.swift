@@ -13,8 +13,8 @@ struct GitStatus: Equatable {
 final class GitStatusService: ObservableObject {
     @Published private(set) var status = GitStatus()
 
-    private let xcodeBundleID = "com.apple.dt.Xcode"
-    private let terminalBundleIDs: Set<String> = ["com.apple.Terminal"]
+    private let appModeService: AppModeService
+    private var modeCancellable: AnyCancellable?
 
     private var currentRepoPath: String?
     private var eventStream: FSEventStreamRef?
@@ -26,19 +26,19 @@ final class GitStatusService: ObservableObject {
 
     private var didStart = false
 
-    init() {}
+    init(appModeService: AppModeService) {
+        self.appModeService = appModeService
+    }
 
     func start() {
         guard !didStart else { return }
         didStart = true
 
-        workspaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.didActivateApplicationNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.recomputeActiveRepo()
-        }
+        modeCancellable = appModeService.$mode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.recomputeActiveRepo()
+            }
 
         safetyNetTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
             self?.recomputeActiveRepo()
@@ -49,27 +49,16 @@ final class GitStatusService: ObservableObject {
         }
     }
 
-    deinit {
-        if let observer = workspaceObserver {
-            NSWorkspace.shared.notificationCenter.removeObserver(observer)
-        }
-        safetyNetTimer?.invalidate()
-        stopWatchingRepo()
-    }
-
     private func recomputeActiveRepo() {
-        guard let frontApp = NSWorkspace.shared.frontmostApplication,
-              let bundleID = frontApp.bundleIdentifier else { return }
+        guard case .dev(let devApp) = appModeService.mode,
+              let frontApp = NSWorkspace.shared.frontmostApplication else { return }
 
-        guard bundleID == xcodeBundleID || terminalBundleIDs.contains(bundleID) else {
-            return
-        }
         let terminalPID = frontApp.processIdentifier
 
         gitQueue.async { [weak self] in
             guard let self = self else { return }
 
-            let resolvedPath: String? = bundleID == self.xcodeBundleID
+            let resolvedPath: String? = devApp == .xcode
                 ? self.resolveXcodeRepoPath()
                 : self.resolveTerminalRepoPath(terminalPID: terminalPID)
 
