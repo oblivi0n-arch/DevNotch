@@ -3,15 +3,7 @@ import SwiftUI
 struct NotchContentView: View {
     @StateObject private var appModeService = AppModeService()
     @StateObject private var gitService: GitStatusService
-
-    init(notchWidth: CGFloat, notchHeight: CGFloat) {
-        self.notchWidth = notchWidth
-        self.notchHeight = notchHeight
-        let modeService = AppModeService()
-        _appModeService = StateObject(wrappedValue: modeService)
-        _gitService = StateObject(wrappedValue: GitStatusService(appModeService: modeService))
-    }
-    
+    @StateObject private var buildMonitor = BuildMonitorService()
     @State private var isHovered = false
 
     private let hitAreaWidth: CGFloat = 280
@@ -27,6 +19,14 @@ struct NotchContentView: View {
 
     private var expandedHeight: CGFloat {
         notchHeight > 0 ? max(100, notchHeight + 65) : 100
+    }
+
+    init(notchWidth: CGFloat, notchHeight: CGFloat) {
+        self.notchWidth = notchWidth
+        self.notchHeight = notchHeight
+        let modeService = AppModeService()
+        _appModeService = StateObject(wrappedValue: modeService)
+        _gitService = StateObject(wrappedValue: GitStatusService(appModeService: modeService))
     }
 
     var body: some View {
@@ -61,6 +61,7 @@ struct NotchContentView: View {
         .onAppear {
             appModeService.start()
             gitService.start()
+            buildMonitor.start()
         }
     }
 

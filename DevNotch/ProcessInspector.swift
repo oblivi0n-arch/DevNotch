@@ -18,41 +18,53 @@ enum ProcessInspector {
         return path.isEmpty ? nil : path
     }
 
-    static func processName(of pid: pid_t) -> String? {
-        var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
-        let length = proc_name(pid, &buffer, UInt32(buffer.count))
-        guard length > 0 else { return nil }
-        return String(cString: buffer)
+    static func snapshotAllProcesses() -> [(pid: pid_t, ppid: pid_t, name: String)] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-A", "-o", "pid=,ppid=,comm="]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+            return output.split(separator: "\n").compactMap { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let parts = trimmed.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+                guard parts.count >= 3,
+                      let pid = pid_t(parts[0]),
+                      let ppid = pid_t(parts[1]) else { return nil }
+                return (pid, ppid, String(parts[2]))
+            }
+        } catch {
+            return []
+        }
     }
 
-    static func childPIDs(of pid: pid_t) -> [pid_t] {
-        let bufferSize = proc_listchildpids(pid, nil, 0)
-        guard bufferSize > 0 else { return [] }
-
-        var pids = [pid_t](repeating: 0, count: Int(bufferSize) / MemoryLayout<pid_t>.size)
-        let actualSize = proc_listchildpids(pid, &pids, bufferSize)
-        guard actualSize > 0 else { return [] }
-
-        let count = Int(actualSize) / MemoryLayout<pid_t>.size
-        return Array(pids.prefix(count))
-    }
-
-    static func findShellPID(startingAt rootPID: pid_t, maxDepth: Int = 4) -> pid_t? {
+    static func findShellPID(startingAt rootPID: pid_t, in snapshot: [(pid: pid_t, ppid: pid_t, name: String)], maxDepth: Int = 4) -> pid_t? {
         let shellNames: Set<String> = ["zsh", "bash", "fish", "sh"]
         var queue: [(pid: pid_t, depth: Int)] = [(rootPID, 0)]
-        var found: pid_t?
+        var visited = Set<pid_t>()
 
         while !queue.isEmpty {
             let (pid, depth) = queue.removeFirst()
+            guard !visited.contains(pid) else { continue }
+            visited.insert(pid)
 
-            if let name = processName(of: pid), shellNames.contains(name) {
-                found = pid
+            if let entry = snapshot.first(where: { $0.pid == pid }),
+               shellNames.contains(where: { entry.name.hasSuffix($0) }) {
+                return pid
             }
             guard depth < maxDepth else { continue }
-            for child in childPIDs(of: pid) {
-                queue.append((child, depth + 1))
+            for child in snapshot.filter({ $0.ppid == pid }) {
+                queue.append((child.pid, depth + 1))
             }
         }
-        return found
+        return nil
     }
 }

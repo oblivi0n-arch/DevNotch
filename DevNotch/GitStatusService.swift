@@ -21,7 +21,6 @@ final class GitStatusService: ObservableObject {
     private var refreshWorkItem: DispatchWorkItem?
     private let gitQueue = DispatchQueue(label: "devnotch.git", qos: .utility)
 
-    private var workspaceObserver: NSObjectProtocol?
     private var safetyNetTimer: Timer?
 
     private var didStart = false
@@ -49,6 +48,11 @@ final class GitStatusService: ObservableObject {
         }
     }
 
+    deinit {
+        safetyNetTimer?.invalidate()
+        stopWatchingRepo()
+    }
+
     private func recomputeActiveRepo() {
         guard case .dev(let devApp) = appModeService.mode,
               let frontApp = NSWorkspace.shared.frontmostApplication else { return }
@@ -71,7 +75,8 @@ final class GitStatusService: ObservableObject {
     }
 
     private func resolveTerminalRepoPath(terminalPID: pid_t) -> String? {
-        guard let shellPID = ProcessInspector.findShellPID(startingAt: terminalPID),
+        let snapshot = ProcessInspector.snapshotAllProcesses()
+        guard let shellPID = ProcessInspector.findShellPID(startingAt: terminalPID, in: snapshot),
               let cwd = ProcessInspector.currentWorkingDirectory(of: shellPID) else {
             return nil
         }
