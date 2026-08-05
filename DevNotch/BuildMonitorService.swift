@@ -11,6 +11,12 @@ struct BuildResourceSample: Equatable {
     var totalCPUPercent: Double = 0
     var totalMemoryMB: Double = 0
     var timestamp: Date = Date()
+    var phase: BuildPhase = .compiling
+}
+
+enum BuildPhase: Equatable {
+    case compiling
+    case postCompile
 }
 
 final class BuildMonitorService: ObservableObject {
@@ -57,11 +63,17 @@ final class BuildMonitorService: ObservableObject {
                 let relevant = resourceSnapshot.filter { subtree.contains($0.pid) }
                 let totalCPU = relevant.reduce(0.0) { $0 + $1.cpuPercent }
                 let totalMemoryMB = Double(relevant.reduce(0) { $0 + $1.residentMemoryKB }) / 1024.0
-                sample = BuildResourceSample(totalCPUPercent: totalCPU, totalMemoryMB: totalMemoryMB, timestamp: Date())
 
                 let hasExtraChildren = subtree.count > 1
                 let rootCPU = resourceSnapshot.first(where: { $0.pid == buildServicePID })?.cpuPercent ?? 0
                 compilingNow = hasExtraChildren || rootCPU > 3.0
+
+                sample = BuildResourceSample(
+                    totalCPUPercent: totalCPU,
+                    totalMemoryMB: totalMemoryMB,
+                    timestamp: Date(),
+                    phase: compilingNow ? .compiling : .postCompile
+                )
             }
 
             DispatchQueue.main.async {
