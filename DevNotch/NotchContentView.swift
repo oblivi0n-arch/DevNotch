@@ -5,6 +5,10 @@ struct NotchContentView: View {
     @StateObject private var gitService: GitStatusService
     @StateObject private var buildMonitor = BuildMonitorService()
     @State private var isHovered = false
+    
+    private var isExpanded: Bool {
+        isHovered || buildMonitor.status.isBuilding
+    }
 
     private let hitAreaWidth: CGFloat = 280
 
@@ -41,7 +45,7 @@ struct NotchContentView: View {
             ZStack {
                 Color.black
 
-                if isHovered {
+                if isExpanded {
                     expandedContent
                         .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
                 } else {
@@ -50,11 +54,11 @@ struct NotchContentView: View {
                 }
             }
             .frame(
-                width: isHovered ? 280 : collapsedWidth,
-                height: isHovered ? expandedHeight : 32
+                width: isExpanded ? 280 : collapsedWidth,
+                height: isExpanded ? expandedHeight : 32
             )
-            .clipShape(RoundedRectangle(cornerRadius: isHovered ? 16 : 10))
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isHovered)
+            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 16 : 10))
+            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isExpanded)
             .allowsHitTesting(false)
         }
         .frame(width: 320, height: 100, alignment: .top)
