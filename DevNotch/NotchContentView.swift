@@ -92,6 +92,14 @@ struct NotchContentView: View {
                 }
                 .font(.system(size: 11))
                 .foregroundColor(.gray)
+
+                if buildMonitor.status.isBuilding, let startedAt = buildMonitor.status.startedAt {
+                    TimelineView(.periodic(from: startedAt, by: 1)) { context in
+                        Label(formattedDuration(from: startedAt, to: context.date), systemImage: "hammer.fill")
+                            .font(.system(size: 11))
+                            .foregroundColor(.orange)
+                    }
+                }
             } else {
                 Text("No repo detected in active Terminal / Xcode")
                     .font(.system(size: 12))
@@ -101,5 +109,12 @@ struct NotchContentView: View {
         }
         .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+    
+    private func formattedDuration(from start: Date, to end: Date) -> String {
+        let seconds = max(0, Int(end.timeIntervalSince(start)))
+        let minutes = seconds / 60
+        let remainingSeconds = seconds % 60
+        return String(format: "%d:%02d", minutes, remainingSeconds)
     }
 }
