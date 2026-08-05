@@ -45,6 +45,36 @@ enum ProcessInspector {
             return []
         }
     }
+    
+    static func snapshotAllProcessesWithResources() -> [(pid: pid_t, ppid: pid_t, name: String, cpuPercent: Double, residentMemoryKB: Int)] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/ps")
+        process.arguments = ["-A", "-o", "pid=,ppid=,rss=,pcpu=,comm="]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard let output = String(data: data, encoding: .utf8) else { return [] }
+
+            return output.split(separator: "\n").compactMap { line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let parts = trimmed.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
+                guard parts.count >= 5,
+                      let pid = pid_t(parts[0]),
+                      let ppid = pid_t(parts[1]),
+                      let rss = Int(parts[2]),
+                      let cpu = Double(parts[3]) else { return nil }
+                return (pid, ppid, String(parts[4]), cpu, rss)
+            }
+        } catch {
+            return []
+        }
+    }
 
     static func findShellPID(startingAt rootPID: pid_t, in snapshot: [(pid: pid_t, ppid: pid_t, name: String)], maxDepth: Int = 4) -> pid_t? {
         let shellNames: Set<String> = ["zsh", "bash", "fish", "sh"]
