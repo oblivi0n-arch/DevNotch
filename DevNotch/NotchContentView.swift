@@ -22,11 +22,7 @@ struct NotchContentView: View {
     }
 
     private var expandedHeight: CGFloat {
-        if buildMonitor.status.isBuilding {
-            return notchHeight > 0 ? max(140, notchHeight + 100) : 140
-        } else {
-            return notchHeight > 0 ? max(100, notchHeight + 65) : 100
-        }
+        notchHeight > 0 ? max(100, notchHeight + 65) : 100
     }
 
     init(notchWidth: CGFloat, notchHeight: CGFloat) {
@@ -65,7 +61,7 @@ struct NotchContentView: View {
             .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isExpanded)
             .allowsHitTesting(false)
         }
-        .frame(width: 320, height: 140, alignment: .top)
+        .frame(width: 320, height: 100, alignment: .top)
         .onAppear {
             appModeService.start()
             gitService.start()
@@ -106,24 +102,6 @@ struct NotchContentView: View {
                         Label(formattedDuration(from: startedAt, to: context.date), systemImage: "hammer.fill")
                             .font(.system(size: 11))
                             .foregroundColor(.orange)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("CPU")
-                            .font(.system(size: 9, weight: .medium))
-                            .foregroundColor(.gray)
-
-                        BuildResourceChartView(samples: buildMonitor.resourceHistory)
-                            .frame(width: 90, height: 18)
-                            .padding(6)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.white.opacity(0.05))
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.white.opacity(0.15), lineWidth: 1)
-                            )
                     }
                 }
             } else {

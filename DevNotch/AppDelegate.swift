@@ -8,7 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         guard let screen = getBuiltInScreen() else { return }
 
         let windowWidth: CGFloat = 320
-        let windowHeight: CGFloat = 140
+        let windowHeight: CGFloat = 100
 
         let screenFrame = screen.frame
         let xPos = screenFrame.origin.x + (screenFrame.width - windowWidth) / 2
