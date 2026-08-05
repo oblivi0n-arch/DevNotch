@@ -16,7 +16,7 @@ struct NotchContentView: View {
     }
 
     private var expandedHeight: CGFloat {
-        notchHeight > 0 ? max(70, notchHeight + 55) : 70
+        notchHeight > 0 ? max(100, notchHeight + 65) : 100
     }
 
     init(notchWidth: CGFloat, notchHeight: CGFloat) {
