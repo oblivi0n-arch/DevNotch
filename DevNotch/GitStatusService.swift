@@ -203,7 +203,7 @@ final class GitStatusService: ObservableObject {
             result.uncommittedChanges = max(0, lines.count - 1)
 
             let tag = self.run("git describe --tags --abbrev=0", at: path)
-            result.lastTag = tag.isEmpty ? "brak tagów" : tag
+            result.lastTag = tag.isEmpty ? "no tags" : tag
 
             DispatchQueue.main.async { self.status = result }
         }

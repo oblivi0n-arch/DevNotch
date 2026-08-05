@@ -79,14 +79,14 @@ struct NotchContentView: View {
                 }
                 .padding(.top, notchHeight)
 
-                Text("\(gitService.status.uncommittedChanges) niescommitowanych zmian")
-                    .font(.system(size: 11))
-                    .foregroundColor(.gray)
-                Text("tag: \(gitService.status.lastTag)")
-                    .font(.system(size: 11))
-                    .foregroundColor(.gray)
+                HStack(spacing: 14) {
+                    Label("\(gitService.status.uncommittedChanges)", systemImage: "pencil")
+                    Label(gitService.status.lastTag, systemImage: "tag.fill")
+                }
+                .font(.system(size: 11))
+                .foregroundColor(.gray)
             } else {
-                Text("Brak repo w aktywnym terminalu / Xcode")
+                Text("No repo detected in active Terminal / Xcode")
                     .font(.system(size: 12))
                     .foregroundColor(.gray)
                     .padding(.top, notchHeight)
