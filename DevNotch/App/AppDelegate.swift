@@ -5,6 +5,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
     var popover: NSPopover!
+
+    private var ollamaIdleTimer: Timer?
+    private let ollamaIdleTimeout: TimeInterval = 5 * 60
     
     let appModeService = AppModeService()
     lazy var gitService = GitStatusService(appModeService: appModeService)
@@ -15,10 +18,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UserDefaults.standard.register(defaults: ["autoStartOllama": true])
         appModeService.start()
         gitService.start()
-
-        Task {
-            await OllamaLauncher.shared.startIfNeeded()
-        }
 
         let windowWidth: CGFloat = 320
         let windowHeight: CGFloat = 100
@@ -63,9 +62,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         popover = NSPopover()
+        popover.delegate = self
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 320, height: 400)
-        popover.contentViewController = NSHostingController(rootView: OllamaChatView(gitService: gitService))
     }
     
     func applicationWillTerminate(_ notification: Notification) {
@@ -92,10 +91,27 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if popover.isShown {
             popover.performClose(nil)
         } else {
+            cancelOllamaIdleShutdown()
+            Task { await OllamaLauncher.shared.startIfNeeded() }
+
             popover.contentViewController = NSHostingController(rootView: OllamaChatView(gitService: gitService))
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
+    }
+
+    private func scheduleOllamaIdleShutdown() {
+        ollamaIdleTimer?.invalidate()
+        ollamaIdleTimer = Timer.scheduledTimer(withTimeInterval: ollamaIdleTimeout, repeats: false) { _ in
+            Task { @MainActor in
+                OllamaLauncher.shared.stopIfWeStartedIt()
+            }
+        }
+    }
+    
+    private func cancelOllamaIdleShutdown() {
+        ollamaIdleTimer?.invalidate()
+        ollamaIdleTimer = nil
     }
 
     private func showQuitMenu() {
@@ -139,5 +155,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return max(notch, 0)
         }
         return 0
+    }
+}
+
+extension AppDelegate: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        scheduleOllamaIdleShutdown()
     }
 }
