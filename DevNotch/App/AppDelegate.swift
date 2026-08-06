@@ -4,9 +4,16 @@ import AppKit
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
+    var popover: NSPopover!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = getBuiltInScreen() else { return }
+        
+        UserDefaults.standard.register(defaults: ["autoStartOllama": true])
+
+        Task {
+            await OllamaLauncher.shared.startIfNeeded()
+        }
 
         let windowWidth: CGFloat = 320
         let windowHeight: CGFloat = 100
@@ -41,14 +48,51 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "chevron.down.square", accessibilityDescription: "DevNotch")
-        
-        let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
-        statusItem.menu = menu
+        statusItem.button?.action = #selector(statusItemClicked(_:))
+        statusItem.button?.target = self
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
+        popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentSize = NSSize(width: 320, height: 400)
+        popover.contentViewController = NSHostingController(rootView: Text("Chat placeholder"))
+    }
+    
+    func applicationWillTerminate(_ notification: Notification) {
+        OllamaLauncher.shared.stopIfWeStartedIt()
     }
     
     @objc private func quitApp() {
         NSApplication.shared.terminate(nil)
+    }
+    
+    @objc private func statusItemClicked(_ sender: NSStatusBarButton) {
+        guard let event = NSApp.currentEvent else { return }
+
+        if event.type == .rightMouseUp {
+            showQuitMenu()
+        } else {
+            togglePopover()
+        }
+    }
+
+    private func togglePopover() {
+        guard let button = statusItem.button else { return }
+
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+            popover.contentViewController?.view.window?.makeKey()
+        }
+    }
+
+    private func showQuitMenu() {
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
+        statusItem.menu = menu
+        statusItem.button?.performClick(nil)
+        statusItem.menu = nil
     }
 
     private func getBuiltInScreen() -> NSScreen? {
