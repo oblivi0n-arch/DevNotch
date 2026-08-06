@@ -33,6 +33,29 @@ enum GitCommitError: LocalizedError {
     }
 }
 
+enum GitTagError: LocalizedError {
+    case noRepo
+    case emptyName
+    case tagExists(String)
+    case writeFailed
+    case tagFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noRepo:
+            return "No active git repository"
+        case .emptyName:
+            return "Tag name is empty"
+        case .tagExists(let name):
+            return "Tag \"\(name)\" already exists"
+        case .writeFailed:
+            return "Could not write the tag message to a temp file"
+        case .tagFailed(let details):
+            return details.isEmpty ? "git tag failed" : details
+        }
+    }
+}
+
 final class GitStatusService: ObservableObject {
     @Published private(set) var status = GitStatus()
 
@@ -336,5 +359,48 @@ final class GitStatusService: ObservableObject {
 
         scheduleRefresh()
         return result.output
+    }
+
+    func commitsSinceLastTag() -> (lastTag: String?, log: String) {
+        guard let path = currentRepoPath else { return (nil, "") }
+
+        let tag = run("git describe --tags --abbrev=0", at: path)
+        let range = tag.isEmpty ? "" : "\(tag)..HEAD"
+        let log = run("git log \(range) --pretty=format:%s", at: path)
+
+        return (tag.isEmpty ? nil : tag, log)
+    }
+
+    func createAnnotatedTag(name: String, message: String) throws {
+        guard let path = currentRepoPath else {
+            throw GitTagError.noRepo
+        }
+
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else {
+            throw GitTagError.emptyName
+        }
+
+        let existing = run("git tag -l \(trimmedName)", at: path)
+        guard existing.isEmpty else {
+            throw GitTagError.tagExists(trimmedName)
+        }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".txt")
+
+        do {
+            try message.write(to: tempURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw GitTagError.writeFailed
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        let result = runResult("git tag -a \(trimmedName) -F \"\(tempURL.path)\"", at: path)
+        guard result.exitCode == 0 else {
+            throw GitTagError.tagFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+        }
+
+        scheduleRefresh()
     }
 }
