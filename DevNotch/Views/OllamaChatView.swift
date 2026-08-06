@@ -64,7 +64,14 @@ struct OllamaChatView: View {
         isStreaming = true
 
         let systemPrompt = """
-        You write Conventional Commits messages. Based on the git diff and the user's description, write a concise, accurate commit message. Output only the commit message.
+        You write git commit messages in Conventional Commits format.
+
+        Output exactly this shape:
+        <type>(<scope>): <short imperative summary, max 72 chars>
+
+        <body: 1-3 sentences explaining what changed and why, based on the diff>
+
+        Output only the commit message, nothing else.
 
         Diff:
         \(stagedDiff)
