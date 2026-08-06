@@ -35,20 +35,54 @@ final class BuildMonitorService: ObservableObject {
     private let runDetectionGracePeriod: TimeInterval = 5
     private var lastChildSeenAt: Date?
 
-    init() {}
+    private let appModeService: AppModeService
+    private var modeCancellable: AnyCancellable?
+
+    init(appModeService: AppModeService) {               
+        self.appModeService = appModeService
+    }
 
     func start() {
         guard !didStart else { return }
         didStart = true
-        print("BuildMonitorService.start() wywołany")
 
+        modeCancellable = appModeService.$mode
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] mode in
+                self?.handleModeChange(mode)
+            }
+
+        handleModeChange(appModeService.mode)
+    }
+
+    deinit {
+        pollTimer?.invalidate()
+    }
+
+    private func handleModeChange(_ mode: AppMode) {
+        if case .dev(.xcode) = mode {
+            startPolling()
+        } else {
+            stopPolling()
+        }
+    }
+
+    private func startPolling() {
+        guard pollTimer == nil else { return }
         pollTimer = Timer.scheduledTimer(withTimeInterval: 0.3, repeats: true) { [weak self] _ in
             self?.poll()
         }
     }
 
-    deinit {
+    private func stopPolling() {
         pollTimer?.invalidate()
+        pollTimer = nil
+        if status.isBuilding {
+            status = BuildStatus(isBuilding: false, startedAt: nil)
+        }
+        trackedRunPID = nil
+        buildFinishedWithoutRunAt = nil
+        lastChildSeenAt = nil
     }
 
     private func poll() {

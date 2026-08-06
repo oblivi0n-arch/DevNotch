@@ -3,7 +3,7 @@ import SwiftUI
 struct NotchContentView: View {
     @ObservedObject private var appModeService: AppModeService
     @ObservedObject private var gitService: GitStatusService
-    @StateObject private var buildMonitor = BuildMonitorService()
+    @StateObject private var buildMonitor: BuildMonitorService
     @State private var isHovered = false
     
     private var isExpanded: Bool {
@@ -54,6 +54,7 @@ struct NotchContentView: View {
         self.notchHeight = notchHeight
         self.appModeService = appModeService
         self.gitService = gitService
+        _buildMonitor = StateObject(wrappedValue: BuildMonitorService(appModeService: appModeService))
     }
 
     var body: some View {
