@@ -230,7 +230,7 @@ final class GitStatusService: ObservableObject {
             return ""
         }
     }
-    
+
     private func parseAheadBehind(from branchInfo: Substring) -> (hasUpstream: Bool, ahead: Int, behind: Int) {
         guard branchInfo.contains("...") else {
             return (false, 0, 0)
@@ -254,12 +254,18 @@ final class GitStatusService: ObservableObject {
 
         return (true, ahead, behind)
     }
-    
+
     func stagedDiff() -> String {
         guard let path = currentRepoPath else { return "" }
         return run("git diff --staged", at: path)
     }
-    
+
+    func stageAll() {
+        guard let path = currentRepoPath else { return }
+        _ = run("git add -A", at: path)
+        scheduleRefresh()
+    }
+
     func commit(message: String) {
         guard let path = currentRepoPath, !message.isEmpty else { return }
 

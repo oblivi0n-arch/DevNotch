@@ -33,9 +33,17 @@ struct OllamaChatView: View {
                         .foregroundColor(.secondary)
                     Text("No staged changes")
                         .font(.system(size: 13, weight: .medium))
-                    Text("Run git add first")
+                    Text("Run git add first, or stage everything below")
                         .font(.system(size: 11))
                         .foregroundColor(.secondary)
+
+                    Button(action: stageAll) {
+                        Label("Stage All", systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.accentColor)
+                    .padding(.top, 4)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
@@ -161,6 +169,11 @@ struct OllamaChatView: View {
         if !noDiff {
             isInputFocused = true
         }
+    }
+
+    private func stageAll() {
+        gitService.stageAll()
+        loadDiff()
     }
 
     private func send() {
