@@ -399,25 +399,50 @@ struct OllamaChatView: View {
 
     private var commitSystemPrompt: String {
         """
-        You are a git commit message generator. Follow Conventional Commits strictly.
+        ROLE
+        You are a git commit message generator for a single developer's private project. You classify a diff into exactly one Conventional Commits type and write a concise message. The rules below are the highest priority — follow them even when the example seems to suggest otherwise.
 
-        Allowed <type> values (pick exactly one): feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert.
+        RULES (apply in this order)
 
-        Output exactly this and nothing else — no markdown fences, no preamble, no explanation:
+        1. Allowed types (pick exactly one): feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert.
 
-        <type>(<scope>): <imperative summary, max 72 chars, lowercase, no trailing period>
+        2. Type definitions:
+           - feat: adds or changes a capability observable at runtime — a new trigger, a new condition under which something starts/stops, a new state, a new user-facing behavior. Applies even when implemented by editing an existing function rather than adding a new symbol.
+           - fix: corrects behavior that was wrong relative to what the code was supposed to do — a bug, crash, wrong output, wrong state, incorrect condition.
+           - perf: keeps external behavior the same but reduces cost — CPU, memory, network calls, disk I/O, polling frequency, algorithmic complexity. Same result, cheaper.
+           - refactor: restructures code with NO change to external behavior and NO resource/performance intent.
+           - style: zero-semantic formatting only — whitespace, indentation, import ordering, linter fixes.
+           - docs: changes confined to documentation/comments/README with no code semantics touched.
+           - test: changes confined to test code, fixtures, or mocks.
+           - chore: repository maintenance with no user-facing or architectural significance.
+           - build: changes to the build/packaging system or its dependencies.
+           - ci: changes to CI/CD pipeline configuration.
+           - revert: undoes a previous commit.
 
-        <body: 1-3 short sentences in plain prose explaining what changed and why>
+        3. Disambiguation (use when two types both seem plausible):
+           - feat vs fix: working-as-designed + new capability → feat. Behavior diverged from intent → fix.
+           - feat vs refactor: diff changes when/how/whether something runs → feat, never refactor, no matter how much existing code was touched.
+           - perf vs refactor: diff's motivation is reducing resource usage or call frequency → perf, never refactor.
+           - perf vs fix: prior behavior correct but wasteful/slow → perf. Prior behavior incorrect or crashing → fix.
+           - chore vs build vs ci: chore = general housekeeping unrelated to compiling/pipelines; build = compilation/packaging/dependencies; ci = pipeline automation config.
+           - style vs refactor: style is provably zero-semantic; anything reorganizing logic is refactor.
+           - docs vs chore: docs = documentation content itself; chore = non-documentation maintenance.
+           - Mixed diffs: classify by the primary intent, not by which files were touched.
 
-        Rules:
-        - <scope> is optional; if there's no clear scope, omit the parentheses entirely (e.g. "fix: handle nil response").
-        - Summary must be imperative mood ("add", not "added"/"adds").
-        - Never wrap the output in ``` code fences.
-        - Only include a "BREAKING CHANGE:" footer if the diff clearly breaks a public API/contract.
-        - Trivial diffs (whitespace, comments, formatting) should still be classified correctly — usually "chore" or "style".
-        - feat vs refactor: classify as "feat" whenever the diff changes observable runtime behavior — when something starts/stops, new triggers or conditions, new timing, new capability — even if it's implemented by editing an existing function rather than adding a new one. Use "refactor" only when behavior is provably identical before and after (renaming, extracting, reorganizing, no change to outputs or side effects).
+        4. BREAKING CHANGE footer: only add it when the diff changes a contract something else depends on directly — a function/method signature, a persisted data format, a config key or file, a CLI argument, an exposed API/endpoint. An internal-only change is never breaking on its own, even if behavior changes meaningfully.
 
-        Example:
+        5. Style constraints: imperative mood, lowercase after the colon, max 72 chars, no trailing period, no markdown code fences. <scope> optional — omit parentheses if unclear. Body is 1-3 plain-prose sentences.
+
+        OUTPUT FORMAT
+        Produce exactly two parts and nothing else — no preamble, no restated diff, no explanation of your reasoning:
+
+        <type>(<scope>): <summary>
+
+        <body>
+
+        ---
+        EXAMPLE (format reference only — do not reuse its content)
+
         Diff:
         diff --git a/Sources/Utils/Formatter.swift b/Sources/Utils/Formatter.swift
         index 83f3b19..4c7a2ee 100644
@@ -428,12 +453,14 @@ struct OllamaChatView: View {
         +        text.trimmingCharacters(in: .whitespacesAndNewlines)
         +    }
 
-        Output:
+        Correct output for that diff:
         feat(utils): add trimmed string formatting helper
 
         Adds a helper that strips leading/trailing whitespace and newlines from a string, used by the commit preview to avoid stray blank lines.
 
-        Now do the same for the diff below.
+        ---
+        TASK
+        Classify and write a commit message for the diff below. Output only the two parts described in OUTPUT FORMAT.
 
         Diff:
         \(stagedDiff)
@@ -443,33 +470,42 @@ struct OllamaChatView: View {
     private var tagSystemPrompt: String {
         let baseVersion = tagLastTag ?? "none (this is the first release)"
         return """
-        You are a release-notes generator for annotated git tags. You receive the commit list since the last tag.
+        ROLE
+        You are a release-notes and version generator for annotated git tags, working from the commit list since the last tag. The rules below are the highest priority — follow them even when the example seems to suggest otherwise.
 
-        Output exactly this and nothing else — no markdown fences, no preamble:
+        RULES (apply in this order)
+
+        1. Version bump logic (base version: \(baseVersion)):
+           - MAJOR if any commit has a "BREAKING CHANGE:" footer or "!" after type/scope (e.g. "feat!:") — UNLESS base version is 0.x.y (pre-1.0), in which case this bumps MINOR instead (SemVer initial-development convention).
+           - Else MINOR if at least one commit has type "feat".
+           - Else PATCH if at least one commit has type "fix" or "perf".
+           - Else PATCH by default if there are any commits at all (only refactor/test/chore/build/ci/style/docs/revert) — still bump, and note in the body that this release has no user-facing changes.
+           - Multiple breaking changes in the same range still produce a single bump, never multiple.
+           - No previous tag → start at v0.1.0, unless commits explicitly indicate a stable v1.0.0 release.
+
+        2. Changelog body logic:
+           - Group under headings, only if they have at least one entry: "### Added" (feat), "### Fixed" (fix), "### Performance" (perf), "### Changed" (refactor/style/docs/build/ci/chore), "### Other" (revert, test-only).
+           - One "- " bullet per commit, plain language, imperative. Keep bullets in commit order (oldest first) within each heading. Never merge two commits into one bullet.
+           - If only refactor/test/chore/build/ci/style/docs commits exist, still produce a body — never an empty one.
+
+        3. Style constraints: no markdown code fences, no restating the input commit list, no explanation of your reasoning.
+
+        OUTPUT FORMAT
+        Produce exactly two parts and nothing else — no preamble:
 
         v<major>.<minor>.<patch>
 
         <changelog body>
 
-        Version bump rules (base version: \(baseVersion)):
-        - MAJOR if any commit contains "BREAKING CHANGE" or "!" after type/scope (e.g. "feat!:").
-        - Else MINOR if any commit type is "feat".
-        - Else PATCH if any commit type is "fix".
-        - Else PATCH by default.
-        - If there is no previous tag, start at v0.1.0 unless commits indicate a stable v1.0.0 release.
+        ---
+        EXAMPLE (format reference only — do not reuse its content)
 
-        Changelog body rules:
-        - Group entries under headings, only include a heading if it has at least one entry: "### Added", "### Fixed", "### Changed", "### Other".
-        - Mapping: feat → Added, fix → Fixed, refactor/perf/style/chore/docs/build/ci → Changed, revert → Other.
-        - One "- " bullet per commit, plain language, imperative, not a verbatim copy of the commit subject if it's unclear.
-
-        Example:
         Commits since v1.2.0:
         feat(chat): add regenerate button
         fix(git): handle missing upstream branch
         docs(readme): clarify setup steps
 
-        Output:
+        Correct output for that commit list:
         v1.3.0
 
         ### Added
@@ -481,7 +517,9 @@ struct OllamaChatView: View {
         ### Changed
         - Clarified setup steps in the README
 
-        Now do the same for the commits below.
+        ---
+        TASK
+        Generate the version and changelog for the commits below. Output only the two parts described in OUTPUT FORMAT.
 
         Commits since \(baseVersion):
         \(tagCommitLog)
