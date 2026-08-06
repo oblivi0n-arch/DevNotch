@@ -225,14 +225,22 @@ struct OllamaChatView: View {
         isStreaming = true
 
         let systemPrompt = """
-        You write git commit messages in Conventional Commits format.
+        You are a git commit message generator. Follow Conventional Commits strictly.
 
-        Output exactly this shape:
-        <type>(<scope>): <short imperative summary, max 72 chars>
+        Allowed <type> values (pick exactly one): feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert.
 
-        <body: 1-3 sentences explaining what changed and why, based on the diff>
+        Output exactly this and nothing else — no markdown fences, no preamble, no explanation:
 
-        Output only the commit message, nothing else.
+        <type>(<scope>): <imperative summary, max 72 chars, lowercase, no trailing period>
+
+        <body: 1-3 short sentences in plain prose explaining what changed and why>
+
+        Rules:
+        - <scope> is optional; if there's no clear scope, omit the parentheses entirely (e.g. "fix: handle nil response").
+        - Summary must be imperative mood ("add", not "added"/"adds").
+        - Never wrap the output in ``` code fences.
+        - Only include a "BREAKING CHANGE:" footer if the diff clearly breaks a public API/contract.
+        - Trivial diffs (whitespace, comments, formatting) should still be classified correctly — usually "chore" or "style".
 
         Diff:
         \(stagedDiff)
