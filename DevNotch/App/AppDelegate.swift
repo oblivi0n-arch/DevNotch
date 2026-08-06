@@ -100,10 +100,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func showQuitMenu() {
         let menu = NSMenu()
+
+        let checkItem = NSMenuItem(title: "Look for active repo", action: #selector(lookForActiveRepo), keyEquivalent: "r")
+        checkItem.target = self
+        menu.addItem(checkItem)
+
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
+
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+
+    @objc private func lookForActiveRepo() {
+        gitService.checkForActiveRepo()
     }
 
     private func getBuiltInScreen() -> NSScreen? {

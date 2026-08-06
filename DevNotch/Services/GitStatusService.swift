@@ -67,12 +67,14 @@ final class GitStatusService: ObservableObject {
     private var refreshWorkItem: DispatchWorkItem?
     private let gitQueue = DispatchQueue(label: "devnotch.git", qos: .utility)
 
-    private var safetyNetTimer: Timer?
-
     private var didStart = false
 
     init(appModeService: AppModeService) {
         self.appModeService = appModeService
+    }
+    
+    func checkForActiveRepo() {
+        recomputeActiveRepo()
     }
 
     func start() {
@@ -85,17 +87,12 @@ final class GitStatusService: ObservableObject {
                 self?.recomputeActiveRepo()
             }
 
-        safetyNetTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: true) { [weak self] _ in
-            self?.recomputeActiveRepo()
-        }
-
         DispatchQueue.main.async { [weak self] in
             self?.recomputeActiveRepo()
         }
     }
 
     deinit {
-        safetyNetTimer?.invalidate()
         stopWatchingRepo()
     }
 
