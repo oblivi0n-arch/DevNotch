@@ -7,6 +7,8 @@ struct OllamaChatView: View {
     @State private var draft: String = ""
     @State private var stagedDiff: String = ""
     @State private var isStreaming = false
+    
+    @FocusState private var isInputFocused: Bool
 
     private let client = OllamaClient()
 
@@ -39,6 +41,7 @@ struct OllamaChatView: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(stagedDiff.isEmpty || isStreaming)
                     .onSubmit(send)
+                    .focused($isInputFocused)
 
                 Button("Send", action: send)
                     .disabled(draft.isEmpty || isStreaming || stagedDiff.isEmpty)
@@ -53,6 +56,8 @@ struct OllamaChatView: View {
         stagedDiff = gitService.stagedDiff()
         if stagedDiff.isEmpty {
             messages = [ChatMessage(role: "system", content: "No staged changes. Run git add first.")]
+        } else {
+            isInputFocused = true
         }
     }
 
