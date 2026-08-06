@@ -17,8 +17,15 @@ struct NotchContentView: View {
 
     private let collapsedDotOverhang: CGFloat = 28
 
+    private var isIdle: Bool {
+        !gitService.status.isValidRepo
+    }
+
     private var collapsedWidth: CGFloat {
-        notchWidth > 0 ? notchWidth + collapsedDotOverhang : 60
+        if isIdle {
+            return notchWidth > 0 ? notchWidth : 40
+        }
+        return notchWidth > 0 ? notchWidth + collapsedDotOverhang : 60
     }
 
     private var expandedHeight: CGFloat {
@@ -85,18 +92,20 @@ struct NotchContentView: View {
 
     private var collapsedContent: some View {
         ZStack {
-            Circle()
-                .fill(gitService.status.uncommittedChanges > 0 ? Color.orange : Color.green)
-                .frame(width: 6, height: 6)
-                .padding(.leading, 8)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-
-            if gitService.status.hasUpstream {
+            if !isIdle {
                 Circle()
-                    .fill(remoteStatusColor)
+                    .fill(gitService.status.uncommittedChanges > 0 ? Color.orange : Color.green)
                     .frame(width: 6, height: 6)
-                    .padding(.trailing, 8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                    .padding(.leading, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+
+                if gitService.status.hasUpstream {
+                    Circle()
+                        .fill(remoteStatusColor)
+                        .frame(width: 6, height: 6)
+                        .padding(.trailing, 8)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                }
             }
         }
     }
