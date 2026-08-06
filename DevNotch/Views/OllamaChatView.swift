@@ -10,6 +10,8 @@ struct OllamaChatView: View {
     @State private var noDiff = false
     @State private var lastError: OllamaError?
     @State private var committedMessageIds: Set<UUID> = []
+    @State private var editingMessageId: UUID?
+    @State private var editDraft: String = ""
 
     @FocusState private var isInputFocused: Bool
 
@@ -64,12 +66,26 @@ struct OllamaChatView: View {
                                                 .foregroundColor(.secondary)
                                         }
                                         .padding(10)
+                                    } else if message.role == "user" && editingMessageId == message.id {
+                                        editingBubble(message)
                                     } else {
                                         VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
                                             Text(message.content)
                                                 .padding(10)
                                                 .background(message.role == "user" ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
                                                 .cornerRadius(10)
+                                                .overlay(alignment: .topTrailing) {
+                                                    if message.role == "user" && message.id == lastUserMessage?.id && !isStreaming && editingMessageId == nil {
+                                                        Button(action: { beginEdit(message) }) {
+                                                            Image(systemName: "pencil.circle.fill")
+                                                                .font(.system(size: 14))
+                                                                .foregroundColor(.secondary)
+                                                                .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
+                                                        }
+                                                        .buttonStyle(.plain)
+                                                        .offset(x: 10, y: -10)
+                                                    }
+                                                }
 
                                             if message.role == "assistant" && isStreaming && message.id == messages.last?.id {
                                                 Text(counterLabel(for: message.content))
@@ -108,7 +124,7 @@ struct OllamaChatView: View {
                         Text(error.errorDescription ?? "Something went wrong")
                             .font(.system(size: 12, weight: .medium))
                         Spacer()
-                        Button("Retry", action: retry)
+                        Button("Retry", action: regenerate)
                             .buttonStyle(.plain)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.accentColor)
@@ -128,7 +144,14 @@ struct OllamaChatView: View {
 
             if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
                 let alreadyCommitted = committedMessageIds.contains(lastAssistant.id)
-                HStack {
+                HStack(spacing: 12) {
+                    Button(action: regenerate) {
+                        Label("Regenerate", systemImage: "arrow.clockwise")
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+
                     Button(action: { performCommit(for: lastAssistant) }) {
                         Label(
                             alreadyCommitted ? "Committed" : "Commit",
@@ -136,6 +159,7 @@ struct OllamaChatView: View {
                         )
                     }
                     .disabled(alreadyCommitted)
+
                     Spacer()
                 }
                 .padding(.horizontal, 8)
@@ -238,9 +262,70 @@ struct OllamaChatView: View {
         }
     }
 
-    private func retry() {
+    private func regenerate() {
+        guard !isStreaming else { return }
+        if let lastAssistantIndex = messages.lastIndex(where: { $0.role == "assistant" }) {
+            messages.removeSubrange(lastAssistantIndex...)
+        }
         guard messages.last?.role == "user" else { return }
         generateResponse()
+    }
+
+    private var lastUserMessage: ChatMessage? {
+        messages.last(where: { $0.role == "user" })
+    }
+
+    private func beginEdit(_ message: ChatMessage) {
+        guard !isStreaming else { return }
+        editDraft = message.content
+        editingMessageId = message.id
+    }
+
+    private func cancelEdit() {
+        editingMessageId = nil
+        editDraft = ""
+    }
+
+    private func saveEdit(for message: ChatMessage) {
+        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        let newText = editDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newText.isEmpty else { return }
+
+        messages[index].content = newText
+        if messages.count > index + 1 {
+            messages.removeSubrange((index + 1)...)
+        }
+
+        editingMessageId = nil
+        editDraft = ""
+        generateResponse()
+    }
+
+    @ViewBuilder
+    private func editingBubble(_ message: ChatMessage) -> some View {
+        HStack(spacing: 6) {
+            TextField("Edit message...", text: $editDraft)
+                .textFieldStyle(.plain)
+                .padding(8)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
+                )
+                .onSubmit { saveEdit(for: message) }
+
+            Button(action: { saveEdit(for: message) }) {
+                Image(systemName: "checkmark.circle.fill")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.accentColor)
+
+            Button(action: cancelEdit) {
+                Image(systemName: "xmark.circle")
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity)
     }
 
     private func performCommit(for message: ChatMessage) {
