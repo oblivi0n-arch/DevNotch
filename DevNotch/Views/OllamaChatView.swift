@@ -7,6 +7,7 @@ struct OllamaChatView: View {
     @State private var draft: String = ""
     @State private var stagedDiff: String = ""
     @State private var isStreaming = false
+    @State private var noDiff = false
     
     @FocusState private var isInputFocused: Bool
 
@@ -24,17 +25,31 @@ struct OllamaChatView: View {
             .padding(.vertical, 8)
 
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 8) {
-                    ForEach(messages) { message in
-                        Text(message.content)
-                            .padding(8)
-                            .background(message.role == "user" ? Color.blue.opacity(0.2) : Color.gray.opacity(0.2))
-                            .cornerRadius(8)
-                            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                    }
+            if noDiff {
+                VStack(spacing: 8) {
+                    Image(systemName: "tray")
+                        .font(.system(size: 24))
+                        .foregroundColor(.secondary)
+                    Text("No staged changes")
+                        .font(.system(size: 13, weight: .medium))
+                    Text("Run git add first")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
                 }
-                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(messages) { message in
+                            Text(message.content)
+                                .padding(8)
+                                .background(message.role == "user" ? Color.blue.opacity(0.2) : Color.gray.opacity(0.2))
+                                .cornerRadius(8)
+                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                        }
+                    }
+                    .padding(8)
+                }
             }
 
             if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming {
@@ -64,9 +79,8 @@ struct OllamaChatView: View {
 
     private func loadDiff() {
         stagedDiff = gitService.stagedDiff()
-        if stagedDiff.isEmpty {
-            messages = [ChatMessage(role: "system", content: "No staged changes. Run git add first.")]
-        } else {
+        noDiff = stagedDiff.isEmpty
+        if !noDiff {
             isInputFocused = true
         }
     }
