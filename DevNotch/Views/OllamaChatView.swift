@@ -415,6 +415,7 @@ struct OllamaChatView: View {
         - Never wrap the output in ``` code fences.
         - Only include a "BREAKING CHANGE:" footer if the diff clearly breaks a public API/contract.
         - Trivial diffs (whitespace, comments, formatting) should still be classified correctly — usually "chore" or "style".
+        - feat vs refactor: classify as "feat" whenever the diff changes observable runtime behavior — when something starts/stops, new triggers or conditions, new timing, new capability — even if it's implemented by editing an existing function rather than adding a new one. Use "refactor" only when behavior is provably identical before and after (renaming, extracting, reorganizing, no change to outputs or side effects).
 
         Example:
         Diff:
