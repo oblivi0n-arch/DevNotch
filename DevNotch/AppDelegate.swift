@@ -3,6 +3,7 @@ import AppKit
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
+    var statusItem: NSStatusItem!
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = getBuiltInScreen() else { return }
@@ -37,6 +38,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentView = hostingView
 
         window.makeKeyAndOrderFront(nil)
+        
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.image = NSImage(systemSymbolName: "chevron.down.square", accessibilityDescription: "DevNotch")
+        
+        let menu = NSMenu()
+        menu.addItem(NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q"))
+        statusItem.menu = menu
+    }
+    
+    @objc private func quitApp() {
+        NSApplication.shared.terminate(nil)
     }
 
     private func getBuiltInScreen() -> NSScreen? {
