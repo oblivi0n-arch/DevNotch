@@ -9,7 +9,7 @@ struct OllamaChatView: View {
     @State private var isStreaming = false
     @State private var noDiff = false
     @State private var lastError: OllamaError?
-    
+
     @FocusState private var isInputFocused: Bool
 
     private let client = OllamaClient()
@@ -39,33 +39,56 @@ struct OllamaChatView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(messages) { message in
-                            Group {
-                                if message.role == "assistant" && message.content.isEmpty && isStreaming {
-                                    HStack(spacing: 6) {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                        Text("Generating response...")
-                                            .font(.system(size: 12))
-                                            .foregroundColor(.secondary)
-                                    }
-                                    .padding(10)
-                                } else {
-                                    Text(message.content)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 8) {
+                            ForEach(messages) { message in
+                                Group {
+                                    if message.role == "assistant" && message.content.isEmpty && isStreaming {
+                                        HStack(spacing: 6) {
+                                            ProgressView()
+                                                .controlSize(.small)
+                                            Text("Generating response...")
+                                                .font(.system(size: 12))
+                                                .foregroundColor(.secondary)
+                                        }
                                         .padding(10)
+                                    } else {
+                                        VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
+                                            Text(message.content)
+                                                .padding(10)
+                                                .background(message.role == "user" ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
+                                                .cornerRadius(10)
+
+                                            if message.role == "assistant" && isStreaming && message.id == messages.last?.id {
+                                                Text(counterLabel(for: message.content))
+                                                    .font(.system(size: 10))
+                                                    .foregroundColor(.secondary)
+                                                    .padding(.horizontal, 4)
+                                            }
+                                        }
+                                    }
                                 }
+                                .background(message.role == "user" || (message.role == "assistant" && message.content.isEmpty && isStreaming) ? Color.clear : Color.clear)
+                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                                .id(message.id)
+                                .transition(.asymmetric(
+                                    insertion: .move(edge: .bottom).combined(with: .opacity),
+                                    removal: .opacity
+                                ))
                             }
-                            .background(message.role == "user" ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
-                            .cornerRadius(10)
-                            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                         }
+                        .padding(8)
                     }
-                    .padding(8)
+                    .onChange(of: messages.count) {
+                        scrollToBottom(proxy)
+                    }
+                    .onChange(of: messages.last?.content) {
+                        scrollToBottom(proxy)
+                    }
                 }
             }
-            
+
             if let error = lastError {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
@@ -91,7 +114,7 @@ struct OllamaChatView: View {
                 .padding(.horizontal, 8)
                 .padding(.top, 8)
             }
-            
+
             if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
                 HStack {
                     Button(action: { gitService.commit(message: lastAssistant.content) }) {
@@ -143,13 +166,17 @@ struct OllamaChatView: View {
     private func send() {
         let userText = draft
         draft = ""
-        messages.append(ChatMessage(role: "user", content: userText))
+        withAnimation(.easeOut(duration: 0.2)) {
+            messages.append(ChatMessage(role: "user", content: userText))
+        }
         generateResponse()
     }
 
     private func generateResponse() {
         lastError = nil
-        messages.append(ChatMessage(role: "assistant", content: ""))
+        withAnimation(.easeOut(duration: 0.2)) {
+            messages.append(ChatMessage(role: "assistant", content: ""))
+        }
         isStreaming = true
 
         let systemPrompt = """
@@ -191,5 +218,19 @@ struct OllamaChatView: View {
     private func retry() {
         guard messages.last?.role == "user" else { return }
         generateResponse()
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        guard let lastId = messages.last?.id else { return }
+        withAnimation(.easeOut(duration: 0.15)) {
+            proxy.scrollTo(lastId, anchor: .bottom)
+        }
+    }
+
+    private func counterLabel(for text: String) -> String {
+        let chars = text.count
+        // Rough heuristic: ~4 characters per token for English text.
+        let approxTokens = max(1, chars / 4)
+        return "\(chars) chars · ~\(approxTokens) tokens"
     }
 }
