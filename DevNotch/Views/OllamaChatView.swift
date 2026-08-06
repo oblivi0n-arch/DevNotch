@@ -64,27 +64,41 @@ struct OllamaChatView: View {
                     .padding(8)
                 }
             }
-
-            if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming {
-                Button("Commit this message") {
-                    gitService.commit(message: lastAssistant.content)
+            if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
+                HStack {
+                    Button(action: { gitService.commit(message: lastAssistant.content) }) {
+                        Label("Commit", systemImage: "checkmark.circle")
+                    }
+                    Spacer()
                 }
-                .padding(.bottom, 8)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
             }
 
             Divider()
+                .padding(.top, 8)
 
-            HStack {
+            HStack(spacing: 8) {
                 TextField("Describe your change...", text: $draft)
-                    .textFieldStyle(.roundedBorder)
+                    .textFieldStyle(.plain)
+                    .padding(8)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
                     .disabled(stagedDiff.isEmpty || isStreaming)
                     .onSubmit(send)
                     .focused($isInputFocused)
 
-                Button("Send", action: send)
-                    .disabled(draft.isEmpty || isStreaming || stagedDiff.isEmpty)
+                Button(action: send) {
+                    Image(systemName: "arrow.up.circle.fill")
+                        .font(.system(size: 22))
+                }
+                .buttonStyle(.plain)
+                .disabled(draft.isEmpty || isStreaming || stagedDiff.isEmpty)
             }
             .padding(8)
+            .background(.ultraThinMaterial)
         }
         .frame(width: 320, height: 400)
         .onAppear(perform: loadDiff)
