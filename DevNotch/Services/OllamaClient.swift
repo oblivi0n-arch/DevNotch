@@ -46,11 +46,11 @@ struct OllamaClient {
         let host = UserDefaults.standard.string(forKey: "ollamaHost") ?? OllamaDefaults.host
         return URL(string: "\(host)/api/chat") ?? URL(string: "\(OllamaDefaults.host)/api/chat")!
     }
-    
+
     var model: String {
         UserDefaults.standard.string(forKey: "ollamaModel") ?? OllamaDefaults.model
     }
-    
+
     func streamChat(messages: [OllamaMessage]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -62,7 +62,8 @@ struct OllamaClient {
                     let body: [String: Any] = [
                         "model": model,
                         "messages": messages.map { ["role": $0.role, "content": $0.content] },
-                        "stream": true
+                        "stream": true,
+                        "options": ["temperature": 0.2]
                     ]
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
@@ -99,7 +100,7 @@ struct OllamaClient {
             }
         }
     }
-    
+
     func complete(messages: [OllamaMessage], think: Bool = false) async throws -> String {
         do {
             var request = URLRequest(url: url)
@@ -110,10 +111,11 @@ struct OllamaClient {
                 "model": model,
                 "messages": messages.map { ["role": $0.role, "content": $0.content] },
                 "stream": false,
-                "think": think
+                "think": think,
+                "options": ["temperature": 0.2]
             ]
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            
+
             let (data, response) = try await URLSession.shared.data(for: request)
 
             guard let httpResponse = response as? HTTPURLResponse else {
@@ -146,4 +148,3 @@ struct OllamaClient {
         }
     }
 }
-
