@@ -24,6 +24,23 @@ struct NotchContentView: View {
     private var expandedHeight: CGFloat {
         notchHeight > 0 ? max(100, notchHeight + 65) : 100
     }
+    
+    private var remoteStatusColor: Color {
+        let ahead = gitService.status.aheadCount
+        let behind = gitService.status.behindCount
+        if behind > 0 { return .purple }
+        if ahead > 0 { return .blue }
+        return .green
+    }
+
+    private var remoteStatusShortLabel: String {
+        let ahead = gitService.status.aheadCount
+        let behind = gitService.status.behindCount
+        var parts: [String] = []
+        if ahead > 0 { parts.append("↑\(ahead)") }
+        if behind > 0 { parts.append("↓\(behind)") }
+        return parts.joined(separator: " ")
+    }
 
     init(notchWidth: CGFloat, notchHeight: CGFloat) {
         self.notchWidth = notchWidth
@@ -70,11 +87,21 @@ struct NotchContentView: View {
     }
 
     private var collapsedContent: some View {
-        Circle()
-            .fill(gitService.status.uncommittedChanges > 0 ? Color.orange : Color.green)
-            .frame(width: 6, height: 6)
-            .padding(.leading, 8)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        ZStack {
+            Circle()
+                .fill(gitService.status.uncommittedChanges > 0 ? Color.orange : Color.green)
+                .frame(width: 6, height: 6)
+                .padding(.leading, 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+
+            if gitService.status.hasUpstream {
+                Circle()
+                    .fill(remoteStatusColor)
+                    .frame(width: 6, height: 6)
+                    .padding(.trailing, 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            }
+        }
     }
 
     private var expandedContent: some View {
@@ -87,9 +114,23 @@ struct NotchContentView: View {
                     Text(gitService.status.branch)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(.white)
+
+                    Spacer()
+
+                    if gitService.status.hasUpstream {
+                        HStack(spacing: 4) {
+                            if gitService.status.aheadCount > 0 || gitService.status.behindCount > 0 {
+                                Text(remoteStatusShortLabel)
+                                    .font(.system(size: 10))
+                                    .foregroundColor(.gray)
+                            }
+                            Circle()
+                                .fill(remoteStatusColor)
+                                .frame(width: 8, height: 8)
+                        }
+                    }
                 }
                 .padding(.top, notchHeight)
-
                 HStack(spacing: 14) {
                     Label("\(gitService.status.uncommittedChanges)", systemImage: "pencil")
                     Label(gitService.status.lastTag, systemImage: "tag.fill")

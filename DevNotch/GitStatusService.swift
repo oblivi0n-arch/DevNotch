@@ -8,6 +8,9 @@ struct GitStatus: Equatable {
     var lastTag: String = ""
     var repoPath: String = ""
     var isValidRepo: Bool = false
+    var hasUpstream: Bool = false
+    var aheadCount: Int = 0
+    var behindCount: Int = 0
 }
 
 final class GitStatusService: ObservableObject {
@@ -193,6 +196,11 @@ final class GitStatusService: ObservableObject {
             if let firstLine = lines.first {
                 let branchInfo = firstLine.dropFirst(min(3, firstLine.count))
                 result.branch = branchInfo.split(separator: ".").first.map(String.init) ?? String(branchInfo)
+
+                let (hasUpstream, ahead, behind) = parseAheadBehind(from: branchInfo)
+                result.hasUpstream = hasUpstream
+                result.aheadCount = ahead
+                result.behindCount = behind
             }
             result.uncommittedChanges = max(0, lines.count - 1)
 
@@ -221,5 +229,29 @@ final class GitStatusService: ObservableObject {
         } catch {
             return ""
         }
+    }
+    
+    private func parseAheadBehind(from branchInfo: Substring) -> (hasUpstream: Bool, ahead: Int, behind: Int) {
+        guard branchInfo.contains("...") else {
+            return (false, 0, 0)
+        }
+
+        var ahead = 0
+        var behind = 0
+
+        if let bracketStart = branchInfo.firstIndex(of: "["),
+           let bracketEnd = branchInfo.firstIndex(of: "]") {
+            let content = branchInfo[branchInfo.index(after: bracketStart)..<bracketEnd]
+            for part in content.split(separator: ",") {
+                let trimmed = part.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("ahead") {
+                    ahead = Int(trimmed.dropFirst("ahead ".count)) ?? 0
+                } else if trimmed.hasPrefix("behind") {
+                    behind = Int(trimmed.dropFirst("behind ".count)) ?? 0
+                }
+            }
+        }
+
+        return (true, ahead, behind)
     }
 }
