@@ -14,6 +14,16 @@ struct OllamaChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack {
+                Text(client.model)
+                    .font(.system(size: 13, weight: .medium))
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+
+            Divider()
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
                     ForEach(messages) { message in
