@@ -26,10 +26,15 @@ struct OllamaChatView: View {
     @State private var actionedMessageIds: Set<UUID> = []
     @State private var editingMessageId: UUID?
     @State private var editDraft: String = ""
+    @State private var autoRetryCount = 0
 
     @FocusState private var isInputFocused: Bool
 
     private let client = OllamaClient()
+    private let maxAutoRetries = 2
+    private static let allowedCommitTypes = [
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "chore", "build", "ci", "revert"
+    ]
 
     private var messages: [ChatMessage] {
         get { mode == .commit ? commitMessages : tagMessages }
@@ -321,14 +326,75 @@ struct OllamaChatView: View {
                         }
                     }
                 }
+                await MainActor.run {
+                    handleGenerationFinished()
+                }
             } catch {
                 await MainActor.run {
                     messages.removeLast()
                     lastError = (error as? OllamaError) ?? .connectionFailed
+                    isStreaming = false
+                    autoRetryCount = 0
                 }
             }
-            await MainActor.run { isStreaming = false }
         }
+    }
+
+    private func handleGenerationFinished() {
+        guard let last = messages.last, last.role == "assistant", !last.content.isEmpty else {
+            isStreaming = false
+            autoRetryCount = 0
+            return
+        }
+
+        if isValidOutput(last.content) {
+            isStreaming = false
+            autoRetryCount = 0
+            return
+        }
+
+        guard autoRetryCount < maxAutoRetries else {
+            isStreaming = false
+            autoRetryCount = 0
+            withAnimation(.easeOut(duration: 0.2)) {
+                messages.append(ChatMessage(role: "system", content: "⚠️ Response format looks off after \(maxAutoRetries) retries — review it before using it"))
+            }
+            return
+        }
+
+        autoRetryCount += 1
+        if let lastAssistantIndex = messages.lastIndex(where: { $0.role == "assistant" }) {
+            messages.removeSubrange(lastAssistantIndex...)
+        }
+        generateResponse()
+    }
+
+    private func isValidOutput(_ content: String) -> Bool {
+        switch mode {
+        case .commit: return isValidCommitOutput(content)
+        case .tag: return isValidTagOutput(content)
+        }
+    }
+
+    private func isValidCommitOutput(_ content: String) -> Bool {
+        guard !content.contains("```") else { return false }
+        guard let firstLine = content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else {
+            return false
+        }
+        let line = firstLine.trimmingCharacters(in: .whitespaces)
+        guard let colonIndex = line.firstIndex(of: ":") else { return false }
+
+        let head = String(line[line.startIndex..<colonIndex])
+        let type = head.contains("(") ? String(head[..<head.firstIndex(of: "(")!]) : head
+
+        guard Self.allowedCommitTypes.contains(type) else { return false }
+        guard line.count <= 100 else { return false }
+        return true
+    }
+
+    private func isValidTagOutput(_ content: String) -> Bool {
+        guard !content.contains("```") else { return false }
+        return parseTagOutput(content) != nil
     }
 
     private var commitSystemPrompt: String {
@@ -349,6 +415,24 @@ struct OllamaChatView: View {
         - Never wrap the output in ``` code fences.
         - Only include a "BREAKING CHANGE:" footer if the diff clearly breaks a public API/contract.
         - Trivial diffs (whitespace, comments, formatting) should still be classified correctly — usually "chore" or "style".
+
+        Example:
+        Diff:
+        diff --git a/Sources/Utils/Formatter.swift b/Sources/Utils/Formatter.swift
+        index 83f3b19..4c7a2ee 100644
+        --- a/Sources/Utils/Formatter.swift
+        +++ b/Sources/Utils/Formatter.swift
+        @@ -12,6 +12,9 @@ struct Formatter {
+        +    static func trimmed(_ text: String) -> String {
+        +        text.trimmingCharacters(in: .whitespacesAndNewlines)
+        +    }
+
+        Output:
+        feat(utils): add trimmed string formatting helper
+
+        Adds a helper that strips leading/trailing whitespace and newlines from a string, used by the commit preview to avoid stray blank lines.
+
+        Now do the same for the diff below.
 
         Diff:
         \(stagedDiff)
@@ -377,6 +461,26 @@ struct OllamaChatView: View {
         - Group entries under headings, only include a heading if it has at least one entry: "### Added", "### Fixed", "### Changed", "### Other".
         - Mapping: feat → Added, fix → Fixed, refactor/perf/style/chore/docs/build/ci → Changed, revert → Other.
         - One "- " bullet per commit, plain language, imperative, not a verbatim copy of the commit subject if it's unclear.
+
+        Example:
+        Commits since v1.2.0:
+        feat(chat): add regenerate button
+        fix(git): handle missing upstream branch
+        docs(readme): clarify setup steps
+
+        Output:
+        v1.3.0
+
+        ### Added
+        - Regenerate button to reroll the last generated response
+
+        ### Fixed
+        - Missing upstream branch no longer crashes status refresh
+
+        ### Changed
+        - Clarified setup steps in the README
+
+        Now do the same for the commits below.
 
         Commits since \(baseVersion):
         \(tagCommitLog)
