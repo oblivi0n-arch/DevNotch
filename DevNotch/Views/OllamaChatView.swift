@@ -41,11 +41,24 @@ struct OllamaChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(messages) { message in
-                            Text(message.content)
-                                .padding(8)
-                                .background(message.role == "user" ? Color.blue.opacity(0.2) : Color.gray.opacity(0.2))
-                                .cornerRadius(8)
-                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
+                            Group {
+                                if message.role == "assistant" && message.content.isEmpty && isStreaming {
+                                    HStack(spacing: 6) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text("Generating response...")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .padding(10)
+                                } else {
+                                    Text(message.content)
+                                        .padding(10)
+                                }
+                            }
+                            .background(message.role == "user" ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
+                            .cornerRadius(10)
+                            .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
                         }
                     }
                     .padding(8)
