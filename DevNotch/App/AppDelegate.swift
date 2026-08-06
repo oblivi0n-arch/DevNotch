@@ -5,11 +5,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var window: NSWindow!
     var statusItem: NSStatusItem!
     var popover: NSPopover!
+    
+    let appModeService = AppModeService()
+    lazy var gitService = GitStatusService(appModeService: appModeService)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         guard let screen = getBuiltInScreen() else { return }
         
         UserDefaults.standard.register(defaults: ["autoStartOllama": true])
+        appModeService.start()
+        gitService.start()
 
         Task {
             await OllamaLauncher.shared.startIfNeeded()
@@ -38,7 +43,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let notchWidth = getNotchWidth(screen: screen)
         let notchHeight = screen.safeAreaInsets.top
 
-        let contentView = NotchContentView(notchWidth: notchWidth, notchHeight: notchHeight)
+        let contentView = NotchContentView(
+            notchWidth: notchWidth,
+            notchHeight: notchHeight,
+            appModeService: appModeService,
+            gitService: gitService
+        )
 
         let hostingView = NSHostingView(rootView: contentView)
         hostingView.frame = NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight)
@@ -55,7 +65,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 320, height: 400)
-        popover.contentViewController = NSHostingController(rootView: Text("Chat placeholder"))
+        popover.contentViewController = NSHostingController(rootView: OllamaChatView(gitService: gitService))
     }
     
     func applicationWillTerminate(_ notification: Notification) {

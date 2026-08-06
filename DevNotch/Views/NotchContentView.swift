@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct NotchContentView: View {
-    @StateObject private var appModeService = AppModeService()
-    @StateObject private var gitService: GitStatusService
+    @ObservedObject private var appModeService: AppModeService
+    @ObservedObject private var gitService: GitStatusService
     @StateObject private var buildMonitor = BuildMonitorService()
     @State private var isHovered = false
     
@@ -42,12 +42,11 @@ struct NotchContentView: View {
         return parts.joined(separator: " ")
     }
 
-    init(notchWidth: CGFloat, notchHeight: CGFloat) {
+    init(notchWidth: CGFloat, notchHeight: CGFloat, appModeService: AppModeService, gitService: GitStatusService) {
         self.notchWidth = notchWidth
         self.notchHeight = notchHeight
-        let modeService = AppModeService()
-        _appModeService = StateObject(wrappedValue: modeService)
-        _gitService = StateObject(wrappedValue: GitStatusService(appModeService: modeService))
+        self.appModeService = appModeService
+        self.gitService = gitService
     }
 
     var body: some View {
@@ -80,8 +79,6 @@ struct NotchContentView: View {
         }
         .frame(width: 320, height: 100, alignment: .top)
         .onAppear {
-            appModeService.start()
-            gitService.start()
             buildMonitor.start()
         }
     }

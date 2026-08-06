@@ -254,4 +254,25 @@ final class GitStatusService: ObservableObject {
 
         return (true, ahead, behind)
     }
+    
+    func stagedDiff() -> String {
+        guard let path = currentRepoPath else { return "" }
+        return run("git diff --staged", at: path)
+    }
+    
+    func commit(message: String) {
+        guard let path = currentRepoPath, !message.isEmpty else { return }
+
+        let tempURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString + ".txt")
+
+        do {
+            try message.write(to: tempURL, atomically: true, encoding: .utf8)
+        } catch {
+            return
+        }
+        defer { try? FileManager.default.removeItem(at: tempURL) }
+
+        _ = run("git commit -F \"\(tempURL.path)\"", at: path)
+    }
 }
