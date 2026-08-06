@@ -8,6 +8,7 @@ struct OllamaChatView: View {
     @State private var stagedDiff: String = ""
     @State private var isStreaming = false
     @State private var noDiff = false
+    @State private var lastError: OllamaError?
     
     @FocusState private var isInputFocused: Bool
 
@@ -64,6 +65,33 @@ struct OllamaChatView: View {
                     .padding(8)
                 }
             }
+            
+            if let error = lastError {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error.errorDescription ?? "Something went wrong")
+                            .font(.system(size: 12, weight: .medium))
+                        Spacer()
+                        Button("Retry", action: retry)
+                            .buttonStyle(.plain)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                    }
+                    if let suggestion = error.recoverySuggestion {
+                        Text(suggestion)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                }
+                .padding(10)
+                .background(Color.red.opacity(0.12))
+                .cornerRadius(8)
+                .padding(.horizontal, 8)
+                .padding(.top, 8)
+            }
+            
             if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
                 HStack {
                     Button(action: { gitService.commit(message: lastAssistant.content) }) {
@@ -116,6 +144,11 @@ struct OllamaChatView: View {
         let userText = draft
         draft = ""
         messages.append(ChatMessage(role: "user", content: userText))
+        generateResponse()
+    }
+
+    private func generateResponse() {
+        lastError = nil
         messages.append(ChatMessage(role: "assistant", content: ""))
         isStreaming = true
 
@@ -147,12 +180,16 @@ struct OllamaChatView: View {
                 }
             } catch {
                 await MainActor.run {
-                    if let lastIndex = messages.indices.last {
-                        messages[lastIndex].content = "Error: \(error.localizedDescription)"
-                    }
+                    messages.removeLast()
+                    lastError = (error as? OllamaError) ?? .connectionFailed
                 }
             }
             await MainActor.run { isStreaming = false }
         }
+    }
+
+    private func retry() {
+        guard messages.last?.role == "user" else { return }
+        generateResponse()
     }
 }
