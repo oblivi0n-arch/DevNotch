@@ -9,6 +9,7 @@ struct OllamaChatView: View {
     @State private var isStreaming = false
     @State private var noDiff = false
     @State private var lastError: OllamaError?
+    @State private var committedMessageIds: Set<UUID> = []
 
     @FocusState private var isInputFocused: Bool
 
@@ -52,7 +53,9 @@ struct OllamaChatView: View {
                         LazyVStack(alignment: .leading, spacing: 8) {
                             ForEach(messages) { message in
                                 Group {
-                                    if message.role == "assistant" && message.content.isEmpty && isStreaming {
+                                    if message.role == "system" {
+                                        systemFeedbackView(message)
+                                    } else if message.role == "assistant" && message.content.isEmpty && isStreaming {
                                         HStack(spacing: 6) {
                                             ProgressView()
                                                 .controlSize(.small)
@@ -124,10 +127,15 @@ struct OllamaChatView: View {
             }
 
             if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
+                let alreadyCommitted = committedMessageIds.contains(lastAssistant.id)
                 HStack {
-                    Button(action: { gitService.commit(message: lastAssistant.content) }) {
-                        Label("Commit", systemImage: "checkmark.circle")
+                    Button(action: { performCommit(for: lastAssistant) }) {
+                        Label(
+                            alreadyCommitted ? "Committed" : "Commit",
+                            systemImage: alreadyCommitted ? "checkmark.circle.fill" : "checkmark.circle"
+                        )
                     }
+                    .disabled(alreadyCommitted)
                     Spacer()
                 }
                 .padding(.horizontal, 8)
@@ -207,7 +215,9 @@ struct OllamaChatView: View {
         """
 
         var history: [OllamaMessage] = [OllamaMessage(role: "system", content: systemPrompt)]
-        history += messages.dropLast().map { OllamaMessage(role: $0.role, content: $0.content) }
+        history += messages.dropLast()
+            .filter { $0.role != "system" }
+            .map { OllamaMessage(role: $0.role, content: $0.content) }
 
         Task {
             do {
@@ -231,6 +241,38 @@ struct OllamaChatView: View {
     private func retry() {
         guard messages.last?.role == "user" else { return }
         generateResponse()
+    }
+
+    private func performCommit(for message: ChatMessage) {
+        do {
+            try gitService.commit(message: message.content)
+            committedMessageIds.insert(message.id)
+            withAnimation(.easeOut(duration: 0.2)) {
+                messages.append(ChatMessage(role: "system", content: "✅ Committed successfully"))
+            }
+        } catch {
+            let reason = (error as? GitCommitError)?.errorDescription ?? error.localizedDescription
+            withAnimation(.easeOut(duration: 0.2)) {
+                messages.append(ChatMessage(role: "system", content: "❌ Commit failed: \(reason)"))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func systemFeedbackView(_ message: ChatMessage) -> some View {
+        let isError = message.content.hasPrefix("❌")
+        HStack(spacing: 6) {
+            Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundColor(isError ? .red : .green)
+            Text(message.content)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background((isError ? Color.red : Color.green).opacity(0.12))
+        .cornerRadius(8)
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {

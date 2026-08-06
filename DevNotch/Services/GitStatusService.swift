@@ -13,6 +13,26 @@ struct GitStatus: Equatable {
     var behindCount: Int = 0
 }
 
+enum GitCommitError: LocalizedError {
+    case noRepo
+    case emptyMessage
+    case writeFailed
+    case commitFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .noRepo:
+            return "No active git repository"
+        case .emptyMessage:
+            return "Commit message is empty"
+        case .writeFailed:
+            return "Could not write the commit message to a temp file"
+        case .commitFailed(let details):
+            return details.isEmpty ? "git commit failed" : details
+        }
+    }
+}
+
 final class GitStatusService: ObservableObject {
     @Published private(set) var status = GitStatus()
 
@@ -231,6 +251,30 @@ final class GitStatusService: ObservableObject {
         }
     }
 
+    private func runResult(_ command: String, at path: String) -> (output: String, errorOutput: String, exitCode: Int32) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: path)
+
+        let outPipe = Pipe()
+        let errPipe = Pipe()
+        process.standardOutput = outPipe
+        process.standardError = errPipe
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
+            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let errorOutput = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return (output, errorOutput, process.terminationStatus)
+        } catch {
+            return ("", error.localizedDescription, -1)
+        }
+    }
+
     private func parseAheadBehind(from branchInfo: Substring) -> (hasUpstream: Bool, ahead: Int, behind: Int) {
         guard branchInfo.contains("...") else {
             return (false, 0, 0)
@@ -266,8 +310,14 @@ final class GitStatusService: ObservableObject {
         scheduleRefresh()
     }
 
-    func commit(message: String) {
-        guard let path = currentRepoPath, !message.isEmpty else { return }
+    @discardableResult
+    func commit(message: String) throws -> String {
+        guard let path = currentRepoPath else {
+            throw GitCommitError.noRepo
+        }
+        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw GitCommitError.emptyMessage
+        }
 
         let tempURL = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString + ".txt")
@@ -275,10 +325,16 @@ final class GitStatusService: ObservableObject {
         do {
             try message.write(to: tempURL, atomically: true, encoding: .utf8)
         } catch {
-            return
+            throw GitCommitError.writeFailed
         }
         defer { try? FileManager.default.removeItem(at: tempURL) }
 
-        _ = run("git commit -F \"\(tempURL.path)\"", at: path)
+        let result = runResult("git commit -F \"\(tempURL.path)\"", at: path)
+        guard result.exitCode == 0 else {
+            throw GitCommitError.commitFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+        }
+
+        scheduleRefresh()
+        return result.output
     }
 }
