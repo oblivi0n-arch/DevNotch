@@ -6,6 +6,7 @@ private struct PulseKey: Equatable {
     let aheadCount: Int
     let behindCount: Int
     let operation: GitOperation
+    let collisions: String
 }
 
 struct NotchContentView: View {
@@ -75,12 +76,30 @@ struct NotchContentView: View {
             lastCommitSubject: status.lastCommitSubject,
             aheadCount: status.aheadCount,
             behindCount: status.behindCount,
-            operation: status.operation
+            operation: status.operation,
+            collisions: status.collisions.map { "\($0.branch):\($0.files.count)" }.joined(separator: ",")
         )
     }
     
     private var visibleRemoteBranches: [RemoteBranchInfo] {
         Array(status.remoteBranches.prefix(remoteDisplayLimit))
+    }
+    
+    private var collisionSummary: String? {
+        guard let first = status.collisions.first else { return nil }
+        
+        let noun = first.files.count == 1 ? "file" : "files"
+        var text = "\(first.files.count) \(noun) also on \(displayName(for: first.branch))"
+        
+        if status.collisions.count > 1 {
+            text += " +\(status.collisions.count - 1)"
+        }
+        
+        return text
+    }
+    
+    private var collisionSectionHeight: CGFloat {
+        collisionSummary == nil ? 0 : remoteRowHeight + 7
     }
     
     private var remoteSectionHeight: CGFloat {
@@ -121,7 +140,7 @@ struct NotchContentView: View {
         case .notch: base = max(118, metrics.notchHeight + 108)
         case .island: base = 118
         }
-        return base + remoteSectionHeight
+        return base + collisionSectionHeight + remoteSectionHeight
     }
     
     private var collapsedCornerRadius: CGFloat {
@@ -180,6 +199,7 @@ struct NotchContentView: View {
     }
     
     private var remoteStatusColor: Color {
+        if !status.collisions.isEmpty { return .yellow }
         if status.behindCount > 0 && status.isDirty { return .orange }
         if status.behindCount > 0 { return .purple }
         if status.aheadCount > 0 { return .blue }
@@ -313,7 +333,7 @@ struct NotchContentView: View {
                     .padding(.leading, style == .island ? 12 : 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
                 
-                if status.hasUpstream {
+                if status.hasUpstream || !status.collisions.isEmpty {
                     Circle()
                         .fill(remoteStatusColor)
                         .frame(width: 6, height: 6)
@@ -332,6 +352,7 @@ struct NotchContentView: View {
                 branchRow
                 changesRow
                 lastCommitRow
+                collisionRow
                 remoteActivitySection
                 Spacer(minLength: 0)
                 tagRow
@@ -432,6 +453,26 @@ struct NotchContentView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.gray)
             }
+        }
+    }
+    
+    @ViewBuilder
+    private var collisionRow: some View {
+        if let summary = collisionSummary {
+            HStack(spacing: 5) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.yellow)
+                
+                Text(summary)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.yellow.opacity(0.9))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                
+                Spacer(minLength: 0)
+            }
+            .frame(height: remoteRowHeight)
         }
     }
     

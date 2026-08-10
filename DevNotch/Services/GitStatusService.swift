@@ -66,7 +66,7 @@ struct GitStatus: Equatable {
     var isDirty: Bool { totalChanges > 0 }
     
     var needsAttention: Bool {
-        conflictedCount > 0 || operation != .none || (behindCount > 0 && isDirty)
+        conflictedCount > 0 || operation != .none || !collisions.isEmpty || (behindCount > 0 && isDirty)
     }
 }
 
