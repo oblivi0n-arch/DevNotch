@@ -75,11 +75,42 @@ struct SettingsView: View {
             )
             .padding(.horizontal, 20)
 
-            Text("Changes apply immediately.")
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Text("Position")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Picker("", selection: $appearance.position) {
+                        ForEach(AppearanceSettings.Position.allCases) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.segmented)
+                    .frame(width: 200)
+                    .disabled(appearance.preference == .notch || (appearance.preference == .auto && detectedNotch))
+                }
+
+                Toggle(isOn: $appearance.hideOutsideDevApps) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Only show while Xcode or Terminal is active")
+                            .font(.system(size: 12, weight: .medium))
+                        Text("Keeps the overlay out of the way of browsers, Finder and everything else.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+
+            Text("Changes apply immediately. Position only applies to the floating island.")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 20)
-                .padding(.top, 12)
+                .padding(.top, 16)
                 .padding(.bottom, 20)
         }
         .frame(width: 420)

@@ -65,17 +65,56 @@ final class AppearanceSettings: ObservableObject {
         }
     }
 
-    private static let storageKey = "notchDisplayStyle"
+    enum Position: String, CaseIterable, Identifiable {
+        case leading
+        case center
+        case trailing
+
+        var id: String { rawValue }
+
+        var label: String {
+            switch self {
+            case .leading: return "Left"
+            case .center: return "Center"
+            case .trailing: return "Right"
+            }
+        }
+    }
+
+    private static let styleKey = "notchDisplayStyle"
+    private static let positionKey = "notchPosition"
+    private static let hideKey = "hideOutsideDevApps"
 
     @Published var preference: Preference {
         didSet {
             guard preference != oldValue else { return }
-            UserDefaults.standard.set(preference.rawValue, forKey: Self.storageKey)
+            UserDefaults.standard.set(preference.rawValue, forKey: Self.styleKey)
+        }
+    }
+
+    @Published var position: Position {
+        didSet {
+            guard position != oldValue else { return }
+            UserDefaults.standard.set(position.rawValue, forKey: Self.positionKey)
+        }
+    }
+
+    @Published var hideOutsideDevApps: Bool {
+        didSet {
+            guard hideOutsideDevApps != oldValue else { return }
+            UserDefaults.standard.set(hideOutsideDevApps, forKey: Self.hideKey)
         }
     }
 
     init() {
-        let stored = UserDefaults.standard.string(forKey: Self.storageKey)
-        preference = stored.flatMap(Preference.init(rawValue:)) ?? .auto
+        UserDefaults.standard.register(defaults: [Self.hideKey: true])
+
+        let storedStyle = UserDefaults.standard.string(forKey: Self.styleKey)
+        preference = storedStyle.flatMap(Preference.init(rawValue:)) ?? .auto
+
+        let storedPosition = UserDefaults.standard.string(forKey: Self.positionKey)
+        position = storedPosition.flatMap(Position.init(rawValue:)) ?? .center
+
+        hideOutsideDevApps = UserDefaults.standard.bool(forKey: Self.hideKey)
     }
 }

@@ -12,12 +12,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var ollamaIdleTimer: Timer?
     private let ollamaIdleTimeout: TimeInterval = 5 * 60
 
-    private let overlayWidth: CGFloat = 340
     private let overlayHeight: CGFloat = 200
     private let islandTopGap: CGFloat = 6
 
     private var appearanceCancellable: AnyCancellable?
     private var screenObserver: NSObjectProtocol?
+    private var spaceObserver: NSObjectProtocol?
 
     let appearanceSettings = AppearanceSettings()
     let appModeService = AppModeService()
@@ -30,8 +30,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         rebuildOverlayWindow()
 
-        appearanceCancellable = appearanceSettings.$preference
-            .dropFirst()
+        appearanceCancellable = appearanceSettings.objectWillChange
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.rebuildOverlayWindow()
@@ -39,6 +38,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         screenObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.rebuildOverlayWindow()
+            }
+        }
+
+        spaceObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -62,6 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let screenObserver {
             NotificationCenter.default.removeObserver(screenObserver)
         }
+        if let spaceObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(spaceObserver)
+        }
         OllamaLauncher.shared.stopIfWeStartedIt()
     }
 
@@ -79,9 +91,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         let screenFrame = screen.frame
         let frame = NSRect(
-            x: screenFrame.origin.x + (screenFrame.width - overlayWidth) / 2,
+            x: screenFrame.origin.x,
             y: screenFrame.origin.y + screenFrame.height - overlayHeight - topOffset,
-            width: overlayWidth,
+            width: screenFrame.width,
             height: overlayHeight
         )
 
@@ -92,12 +104,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let contentView = NotchContentView(
             style: style,
             metrics: metrics,
+            position: appearanceSettings.position,
+            hideOutsideDevApps: appearanceSettings.hideOutsideDevApps,
+            windowFrame: frame,
             appModeService: appModeService,
             gitService: gitService
         )
 
         let hostingView = NSHostingView(rootView: contentView)
-        hostingView.frame = NSRect(x: 0, y: 0, width: overlayWidth, height: overlayHeight)
+        hostingView.frame = NSRect(origin: .zero, size: frame.size)
+        hostingView.autoresizingMask = [.width, .height]
         overlay.contentView = hostingView
         overlay.orderFrontRegardless()
     }
@@ -114,6 +130,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.isOpaque = false
         overlay.backgroundColor = .clear
         overlay.hasShadow = false
+        overlay.ignoresMouseEvents = true
         overlay.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
         return overlay

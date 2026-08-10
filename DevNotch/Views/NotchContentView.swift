@@ -11,6 +11,7 @@ private struct PulseKey: Equatable {
 struct NotchContentView: View {
     @ObservedObject private var appModeService: AppModeService
     @ObservedObject private var gitService: GitStatusService
+    @StateObject private var pointer = PointerTracker()
 
     @State private var isHoverExpanded = false
     @State private var isPulsing = false
@@ -19,10 +20,14 @@ struct NotchContentView: View {
 
     private let style: NotchStyle
     private let metrics: ScreenMetrics
+    private let position: AppearanceSettings.Position
+    private let hideOutsideDevApps: Bool
+    private let windowFrame: NSRect
 
     private let expandedWidth: CGFloat = 300
     private let collapsedHeight: CGFloat = 32
     private let collapsedDotOverhang: CGFloat = 28
+    private let edgeInset: CGFloat = 16
 
     private let pulseDuration: Duration = .seconds(2)
     private let hoverOpenDelay: Duration = .milliseconds(120)
@@ -31,9 +36,20 @@ struct NotchContentView: View {
     private let collapsedHoverPadding: CGFloat = 18
     private let expandedHoverPadding: CGFloat = 14
 
-    init(style: NotchStyle, metrics: ScreenMetrics, appModeService: AppModeService, gitService: GitStatusService) {
+    init(
+        style: NotchStyle,
+        metrics: ScreenMetrics,
+        position: AppearanceSettings.Position,
+        hideOutsideDevApps: Bool,
+        windowFrame: NSRect,
+        appModeService: AppModeService,
+        gitService: GitStatusService
+    ) {
         self.style = style
         self.metrics = metrics
+        self.position = position
+        self.hideOutsideDevApps = hideOutsideDevApps
+        self.windowFrame = windowFrame
         self.appModeService = appModeService
         self.gitService = gitService
     }
@@ -44,7 +60,11 @@ struct NotchContentView: View {
 
     private var isIdle: Bool { !status.isValidRepo }
 
-    private var isExpanded: Bool { isHoverExpanded || isPulsing }
+    private var isHidden: Bool {
+        hideOutsideDevApps && appModeService.mode == .neutral
+    }
+
+    private var isExpanded: Bool { !isHidden && (isHoverExpanded || isPulsing) }
 
     private var pulseKey: PulseKey {
         PulseKey(
@@ -57,6 +77,18 @@ struct NotchContentView: View {
     }
 
     // MARK: - Style geometry
+
+    private var effectivePosition: AppearanceSettings.Position {
+        style == .notch ? .center : position
+    }
+
+    private var outerAlignment: Alignment {
+        switch effectivePosition {
+        case .leading: return .topLeading
+        case .center: return .top
+        case .trailing: return .topTrailing
+        }
+    }
 
     private var collapsedWidth: CGFloat {
         switch style {
@@ -85,8 +117,8 @@ struct NotchContentView: View {
         style == .island ? 12 : metrics.notchHeight
     }
 
-    private var shadowRadius: CGFloat {
-        style == .island ? 14 : 0
+    private var shadowOpacity: Double {
+        style == .island ? 0.35 : 0
     }
 
     private var hoverAreaWidth: CGFloat {
@@ -95,6 +127,31 @@ struct NotchContentView: View {
 
     private var hoverAreaHeight: CGFloat {
         isExpanded ? expandedHeight + expandedHoverPadding : collapsedHeight + 6
+    }
+
+    private var horizontalInset: CGFloat {
+        effectivePosition == .center ? 0 : edgeInset
+    }
+
+    private var trackingFrame: NSRect {
+        guard !isHidden, !windowFrame.isEmpty else { return .zero }
+
+        let centerX: CGFloat
+        switch effectivePosition {
+        case .leading:
+            centerX = windowFrame.minX + horizontalInset + hoverAreaWidth / 2
+        case .center:
+            centerX = windowFrame.midX
+        case .trailing:
+            centerX = windowFrame.maxX - horizontalInset - hoverAreaWidth / 2
+        }
+
+        return NSRect(
+            x: centerX - hoverAreaWidth / 2,
+            y: windowFrame.maxY - hoverAreaHeight,
+            width: hoverAreaWidth,
+            height: hoverAreaHeight
+        )
     }
 
     // MARK: - Colors
@@ -131,57 +188,82 @@ struct NotchContentView: View {
     // MARK: - Body
 
     var body: some View {
-        ZStack(alignment: .top) {
+        ZStack(alignment: outerAlignment) {
             Color.clear
-                .frame(width: hoverAreaWidth, height: hoverAreaHeight)
-                .contentShape(Rectangle())
-                .onHover(perform: handleHover)
 
-            ZStack {
-                Color.black
-
-                if isExpanded {
-                    expandedContent
-                        .transition(
-                            .asymmetric(
-                                insertion: .opacity
-                                    .combined(with: .offset(y: -6))
-                                    .animation(.easeOut(duration: 0.2).delay(0.08)),
-                                removal: .opacity
-                                    .animation(.easeIn(duration: 0.09))
-                            )
-                        )
-                } else {
-                    collapsedContent
-                        .transition(
-                            .asymmetric(
-                                insertion: .opacity.animation(.easeOut(duration: 0.18).delay(0.12)),
-                                removal: .opacity.animation(.easeIn(duration: 0.08))
-                            )
-                        )
-                }
+            if !isHidden {
+                capsule
+                    .padding(.horizontal, horizontalInset)
+                    .transition(.opacity)
             }
-            .frame(
-                width: isExpanded ? expandedWidth : collapsedWidth,
-                height: isExpanded ? expandedHeight : collapsedHeight
-            )
-            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius))
-            .shadow(color: .black.opacity(shadowRadius > 0 ? 0.35 : 0), radius: shadowRadius, y: 4)
-            .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
-            .allowsHitTesting(false)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .onChange(of: pulseKey) { oldValue, newValue in
-            guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
-            triggerPulse()
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
+        .animation(.easeInOut(duration: 0.2), value: isHidden)
+        .onAppear {
+            pointer.start()
+            pointer.updateTrackingFrame(trackingFrame)
         }
         .onDisappear {
+            pointer.stop()
             hoverTask?.cancel()
             pulseTask?.cancel()
         }
+        .onChange(of: trackingFrame) { _, frame in
+            pointer.updateTrackingFrame(frame)
+        }
+        .onChange(of: pointer.isInside) { _, inside in
+            scheduleHoverChange(to: inside)
+        }
+        .onChange(of: isHidden) { _, hidden in
+            if hidden {
+                hoverTask?.cancel()
+                isHoverExpanded = false
+                isPulsing = false
+            }
+        }
+        .onChange(of: pulseKey) { oldValue, newValue in
+            guard !isHidden else { return }
+            guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
+            triggerPulse()
+        }
     }
 
-    private func handleHover(_ hovering: Bool) {
+    private var capsule: some View {
+        ZStack {
+            Color.black
+
+            if isExpanded {
+                expandedContent
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity
+                                .combined(with: .offset(y: -6))
+                                .animation(.easeOut(duration: 0.2).delay(0.08)),
+                            removal: .opacity
+                                .animation(.easeIn(duration: 0.09))
+                        )
+                    )
+            } else {
+                collapsedContent
+                    .transition(
+                        .asymmetric(
+                            insertion: .opacity.animation(.easeOut(duration: 0.18).delay(0.12)),
+                            removal: .opacity.animation(.easeIn(duration: 0.08))
+                        )
+                    )
+            }
+        }
+        .frame(
+            width: isExpanded ? expandedWidth : collapsedWidth,
+            height: isExpanded ? expandedHeight : collapsedHeight
+        )
+        .clipShape(RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius))
+        .shadow(color: .black.opacity(shadowOpacity), radius: shadowOpacity > 0 ? 14 : 0, y: 4)
+        .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
+        .allowsHitTesting(false)
+    }
+
+    private func scheduleHoverChange(to hovering: Bool) {
         hoverTask?.cancel()
 
         guard hovering != isHoverExpanded else { return }
