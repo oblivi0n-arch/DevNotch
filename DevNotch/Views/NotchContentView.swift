@@ -102,7 +102,7 @@ struct NotchContentView: View {
 
     private var expandedHeight: CGFloat {
         switch style {
-        case .notch: return max(118, metrics.notchHeight + 100)
+        case .notch: return max(118, metrics.notchHeight + 108)
         case .island: return 118
         }
     }
@@ -114,7 +114,7 @@ struct NotchContentView: View {
     private var expandedCornerRadius: CGFloat { 18 }
 
     private var contentTopPadding: CGFloat {
-        style == .island ? 12 : metrics.notchHeight
+        style == .island ? 12 : metrics.notchHeight + 18
     }
 
     private var shadowOpacity: Double {
@@ -326,7 +326,7 @@ struct NotchContentView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.bottom, 12)
+        .padding(.bottom, 20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
     }
 
