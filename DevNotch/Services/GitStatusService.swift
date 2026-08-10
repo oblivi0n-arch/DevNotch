@@ -2,15 +2,52 @@ import Foundation
 import AppKit
 import Combine
 
+enum GitOperation: String, Equatable {
+    case none
+    case rebasing
+    case merging
+    case cherryPicking
+    case reverting
+    case bisecting
+
+    var label: String? {
+        switch self {
+        case .none: return nil
+        case .rebasing: return "REBASING"
+        case .merging: return "MERGING"
+        case .cherryPicking: return "CHERRY-PICKING"
+        case .reverting: return "REVERTING"
+        case .bisecting: return "BISECTING"
+        }
+    }
+}
+
 struct GitStatus: Equatable {
     var branch: String = ""
-    var uncommittedChanges: Int = 0
+    var stagedCount: Int = 0
+    var modifiedCount: Int = 0
+    var untrackedCount: Int = 0
+    var conflictedCount: Int = 0
     var lastTag: String = ""
     var repoPath: String = ""
     var isValidRepo: Bool = false
     var hasUpstream: Bool = false
     var aheadCount: Int = 0
     var behindCount: Int = 0
+    var operation: GitOperation = .none
+    var operationProgress: String = ""
+    var lastCommitSubject: String = ""
+    var lastCommitRelative: String = ""
+
+    var totalChanges: Int {
+        stagedCount + modifiedCount + untrackedCount + conflictedCount
+    }
+
+    var isDirty: Bool { totalChanges > 0 }
+
+    var needsAttention: Bool {
+        conflictedCount > 0 || operation != .none || (behindCount > 0 && isDirty)
+    }
 }
 
 enum GitCommitError: LocalizedError {
@@ -73,6 +110,11 @@ final class GitStatusService: ObservableObject {
     private var eventStream: FSEventStreamRef?
     private var refreshWorkItem: DispatchWorkItem?
     private let gitQueue = DispatchQueue(label: "devnotch.git", qos: .utility)
+    private let fetchQueue = DispatchQueue(label: "devnotch.git.fetch", qos: .background)
+
+    private var fetchTimer: DispatchSourceTimer?
+    private let fetchInterval: TimeInterval = 180
+    private let fetchTimeout: TimeInterval = 20
 
     private var didStart = false
 
@@ -100,26 +142,47 @@ final class GitStatusService: ObservableObject {
     }
 
     deinit {
+        fetchTimer?.cancel()
         stopWatchingRepo()
     }
 
     private func recomputeActiveRepo() {
+        dispatchPrecondition(condition: .onQueue(.main))
+
         guard case .dev(let devApp) = appModeService.mode,
-              let frontApp = NSWorkspace.shared.frontmostApplication else { return }
+              let frontApp = NSWorkspace.shared.frontmostApplication else {
+            return
+        }
 
-        let terminalPID = frontApp.processIdentifier
+        let frontPID = frontApp.processIdentifier
 
+        switch devApp {
+        case .xcode:
+            applyResolvedPath(resolveXcodeRepoPath())
+        case .terminal:
+            gitQueue.async { [weak self] in
+                guard let self else { return }
+                self.applyResolvedPath(self.resolveTerminalRepoPath(terminalPID: frontPID))
+            }
+        }
+    }
+
+    private func applyResolvedPath(_ path: String?) {
         gitQueue.async { [weak self] in
-            guard let self = self else { return }
-
-            let resolvedPath: String? = devApp == .xcode
-                ? self.resolveXcodeRepoPath()
-                : self.resolveTerminalRepoPath(terminalPID: terminalPID)
-
-            guard let path = resolvedPath, path != self.currentRepoPath else { return }
+            guard let self else { return }
+            guard path != self.currentRepoPath else { return }
 
             self.currentRepoPath = path
+
+            guard let path else {
+                self.stopWatchingRepo()
+                self.stopFetchTimer()
+                DispatchQueue.main.async { self.status = GitStatus() }
+                return
+            }
+
             self.watchRepo(at: path)
+            self.startFetchTimer()
             self.refreshStatus(at: path)
         }
     }
@@ -242,14 +305,28 @@ final class GitStatusService: ObservableObject {
 
             if let firstLine = lines.first {
                 let branchInfo = firstLine.dropFirst(min(3, firstLine.count))
-                result.branch = parseBranchName(from: branchInfo)
+                result.branch = self.parseBranchName(from: branchInfo)
 
-                let (hasUpstream, ahead, behind) = parseAheadBehind(from: branchInfo)
+                let (hasUpstream, ahead, behind) = self.parseAheadBehind(from: branchInfo)
                 result.hasUpstream = hasUpstream
                 result.aheadCount = ahead
                 result.behindCount = behind
             }
-            result.uncommittedChanges = max(0, lines.count - 1)
+
+            let counts = self.parseCounts(from: lines.dropFirst())
+            result.stagedCount = counts.staged
+            result.modifiedCount = counts.modified
+            result.untrackedCount = counts.untracked
+            result.conflictedCount = counts.conflicted
+
+            let operation = self.detectOperation(at: path)
+            result.operation = operation.kind
+            result.operationProgress = operation.progress
+
+            let lastCommit = self.git(["log", "-1", "--pretty=format:%s%n%cr"], at: path)
+            let commitLines = lastCommit.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
+            result.lastCommitSubject = commitLines.first.map(String.init) ?? ""
+            result.lastCommitRelative = commitLines.count > 1 ? String(commitLines[1]) : ""
 
             let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
             result.lastTag = tag.isEmpty ? "no tags" : tag
@@ -258,10 +335,142 @@ final class GitStatusService: ObservableObject {
         }
     }
 
+    private func parseCounts(
+        from lines: ArraySlice<Substring>
+    ) -> (staged: Int, modified: Int, untracked: Int, conflicted: Int) {
+        let conflictCodes: Set<String> = ["DD", "AU", "UD", "UA", "DU", "AA", "UU"]
+
+        var staged = 0
+        var modified = 0
+        var untracked = 0
+        var conflicted = 0
+
+        for line in lines {
+            guard line.count >= 2 else { continue }
+            let code = String(line.prefix(2))
+
+            if code == "??" {
+                untracked += 1
+                continue
+            }
+            if conflictCodes.contains(code) {
+                conflicted += 1
+                continue
+            }
+
+            let index = code[code.startIndex]
+            let worktree = code[code.index(after: code.startIndex)]
+
+            if index != " " { staged += 1 }
+            if worktree != " " { modified += 1 }
+        }
+
+        return (staged, modified, untracked, conflicted)
+    }
+
+    private func detectOperation(at path: String) -> (kind: GitOperation, progress: String) {
+        let gitDir = (path as NSString).appendingPathComponent(".git")
+        let fileManager = FileManager.default
+
+        func exists(_ component: String) -> Bool {
+            fileManager.fileExists(atPath: (gitDir as NSString).appendingPathComponent(component))
+        }
+
+        func read(_ relativePath: String) -> Int? {
+            let full = (gitDir as NSString).appendingPathComponent(relativePath)
+            guard let raw = try? String(contentsOfFile: full, encoding: .utf8) else { return nil }
+            return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        if exists("rebase-merge") || exists("rebase-apply") {
+            let directory = exists("rebase-merge") ? "rebase-merge" : "rebase-apply"
+            let done = read("\(directory)/msgnum") ?? read("\(directory)/next")
+            let total = read("\(directory)/end") ?? read("\(directory)/last")
+
+            if let done, let total {
+                return (.rebasing, "\(done)/\(total)")
+            }
+            return (.rebasing, "")
+        }
+
+        if exists("MERGE_HEAD") { return (.merging, "") }
+        if exists("CHERRY_PICK_HEAD") { return (.cherryPicking, "") }
+        if exists("REVERT_HEAD") { return (.reverting, "") }
+        if exists("BISECT_LOG") { return (.bisecting, "") }
+
+        return (.none, "")
+    }
+
+    // MARK: - Remote refresh
+
+    private func startFetchTimer() {
+        fetchTimer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: gitQueue)
+        timer.schedule(deadline: .now() + 5, repeating: fetchInterval)
+        timer.setEventHandler { [weak self] in
+            self?.dispatchFetch()
+        }
+        timer.resume()
+        fetchTimer = timer
+    }
+
+    private func stopFetchTimer() {
+        fetchTimer?.cancel()
+        fetchTimer = nil
+    }
+
+    private func dispatchFetch() {
+        guard let path = currentRepoPath else { return }
+        guard !git(["remote"], at: path).isEmpty else { return }
+
+        fetchQueue.async { [weak self] in
+            guard let self else { return }
+            self.performFetch(at: path)
+            self.gitQueue.async { [weak self] in
+                self?.scheduleRefresh()
+            }
+        }
+    }
+
+    private func performFetch(at path: String) {
+        let process = Process()
+        process.executableURL = Self.gitExecutableURL
+        process.arguments = ["fetch", "--prune", "--quiet"]
+        process.currentDirectoryURL = URL(fileURLWithPath: path)
+        process.environment = Self.gitEnvironment
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+        } catch {
+            return
+        }
+
+        let watchdog = DispatchWorkItem {
+            if process.isRunning { process.terminate() }
+        }
+        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + fetchTimeout, execute: watchdog)
+
+        process.waitUntilExit()
+        watchdog.cancel()
+    }
+
     private static let gitExecutableURL: URL = {
         let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
         let path = candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
         return URL(fileURLWithPath: path)
+    }()
+
+    private static let gitEnvironment: [String: String] = {
+        var environment = ProcessInfo.processInfo.environment
+        environment["GIT_TERMINAL_PROMPT"] = "0"
+        environment["GIT_ASKPASS"] = "/usr/bin/true"
+        environment["SSH_ASKPASS"] = "/usr/bin/true"
+        environment["GIT_SSH_COMMAND"] = "ssh -oBatchMode=yes"
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        return environment
     }()
 
     private func git(_ arguments: [String], at path: String) -> String {
@@ -269,6 +478,7 @@ final class GitStatusService: ObservableObject {
         process.executableURL = Self.gitExecutableURL
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
+        process.environment = Self.gitEnvironment
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -289,6 +499,7 @@ final class GitStatusService: ObservableObject {
         process.executableURL = Self.gitExecutableURL
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
+        process.environment = Self.gitEnvironment
 
         let outPipe = Pipe()
         let errPipe = Pipe()

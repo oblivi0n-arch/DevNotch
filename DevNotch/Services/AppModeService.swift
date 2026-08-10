@@ -64,6 +64,8 @@ final class AppModeService: ObservableObject {
     }
 
     private func updateMode(for bundleID: String) {
+        guard bundleID != Bundle.main.bundleIdentifier else { return }
+
         if let devApp = bundleIDToDevApp[bundleID] {
             mode = .dev(devApp)
         } else {

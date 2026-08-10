@@ -20,7 +20,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         gitService.start()
 
         let windowWidth: CGFloat = 320
-        let windowHeight: CGFloat = 100
+        let windowHeight: CGFloat = 180
 
         let screenFrame = screen.frame
         let xPos = screenFrame.origin.x + (screenFrame.width - windowWidth) / 2
@@ -37,7 +37,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary]
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
 
         let notchWidth = getNotchWidth(screen: screen)
         let notchHeight = screen.safeAreaInsets.top
