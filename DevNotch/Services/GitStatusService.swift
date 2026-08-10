@@ -36,6 +36,7 @@ enum GitCommitError: LocalizedError {
 enum GitTagError: LocalizedError {
     case noRepo
     case emptyName
+    case invalidName(String)
     case tagExists(String)
     case writeFailed
     case tagFailed(String)
@@ -46,6 +47,8 @@ enum GitTagError: LocalizedError {
             return "No active git repository"
         case .emptyName:
             return "Tag name is empty"
+        case .invalidName(let name):
+            return "\"\(name)\" is not a valid semantic version tag"
         case .tagExists(let name):
             return "Tag \"\(name)\" already exists"
         case .writeFailed:
@@ -57,6 +60,10 @@ enum GitTagError: LocalizedError {
 }
 
 final class GitStatusService: ObservableObject {
+    static func isValidTagName(_ name: String) -> Bool {
+        let pattern = #"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$"#
+        return name.range(of: pattern, options: .regularExpression) != nil
+    }
     @Published private(set) var status = GitStatus()
 
     private let appModeService: AppModeService
@@ -223,14 +230,14 @@ final class GitStatusService: ObservableObject {
 
             var result = GitStatus(repoPath: path)
 
-            let isRepo = self.run("git rev-parse --is-inside-work-tree", at: path)
+            let isRepo = self.git(["rev-parse", "--is-inside-work-tree"], at: path)
             guard isRepo == "true" else {
                 DispatchQueue.main.async { self.status = result }
                 return
             }
             result.isValidRepo = true
 
-            let statusOutput = self.run("git status --porcelain=v1 -b", at: path)
+            let statusOutput = self.git(["status", "--porcelain=v1", "-b"], at: path)
             let lines = statusOutput.split(separator: "\n", omittingEmptySubsequences: true)
 
             if let firstLine = lines.first {
@@ -244,17 +251,23 @@ final class GitStatusService: ObservableObject {
             }
             result.uncommittedChanges = max(0, lines.count - 1)
 
-            let tag = self.run("git describe --tags --abbrev=0", at: path)
+            let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
             result.lastTag = tag.isEmpty ? "no tags" : tag
 
             DispatchQueue.main.async { self.status = result }
         }
     }
 
-    private func run(_ command: String, at path: String) -> String {
+    private static let gitExecutableURL: URL = {
+        let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
+        let path = candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
+        return URL(fileURLWithPath: path)
+    }()
+
+    private func git(_ arguments: [String], at path: String) -> String {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
+        process.executableURL = Self.gitExecutableURL
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
 
         let pipe = Pipe()
@@ -271,10 +284,10 @@ final class GitStatusService: ObservableObject {
         }
     }
 
-    private func runResult(_ command: String, at path: String) -> (output: String, errorOutput: String, exitCode: Int32) {
+    private func gitResult(_ arguments: [String], at path: String) -> (output: String, errorOutput: String, exitCode: Int32) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-c", command]
+        process.executableURL = Self.gitExecutableURL
+        process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
 
         let outPipe = Pipe()
@@ -303,7 +316,7 @@ final class GitStatusService: ObservableObject {
             return ("", error.localizedDescription, -1)
         }
     }
-
+    
     private func parseAheadBehind(from branchInfo: Substring) -> (hasUpstream: Bool, ahead: Int, behind: Int) {
         guard branchInfo.contains("...") else {
             return (false, 0, 0)
@@ -353,15 +366,31 @@ final class GitStatusService: ObservableObject {
     func stagedDiff() async -> String {
         await onGitQueue {
             guard let path = self.currentRepoPath else { return "" }
-            return self.run("git diff --staged", at: path)
+            return self.git(["diff", "--staged"], at: path)
         }
     }
 
     func stageAll() async {
         await onGitQueue {
             guard let path = self.currentRepoPath else { return }
-            _ = self.run("git add -A", at: path)
+            _ = self.git(["add", "-A"], at: path)
             self.scheduleRefresh()
+        }
+    }
+
+    func commitsSinceLastTag() async -> (lastTag: String?, log: String) {
+        await onGitQueue {
+            guard let path = self.currentRepoPath else { return (nil, "") }
+
+            let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
+
+            var logArguments = ["log", "--pretty=format:%s"]
+            if !tag.isEmpty {
+                logArguments.append("\(tag)..HEAD")
+            }
+            let log = self.git(logArguments, at: path)
+
+            return (tag.isEmpty ? nil : tag, log)
         }
     }
 
@@ -385,25 +414,13 @@ final class GitStatusService: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
 
-            let result = self.runResult("git commit -F \"\(tempURL.path)\"", at: path)
+            let result = self.gitResult(["commit", "-F", tempURL.path], at: path)
             guard result.exitCode == 0 else {
                 throw GitCommitError.commitFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
             }
 
             self.scheduleRefresh()
             return result.output
-        }
-    }
-
-    func commitsSinceLastTag() async -> (lastTag: String?, log: String) {
-        await onGitQueue {
-            guard let path = self.currentRepoPath else { return (nil, "") }
-
-            let tag = self.run("git describe --tags --abbrev=0", at: path)
-            let range = tag.isEmpty ? "" : "\(tag)..HEAD"
-            let log = self.run("git log \(range) --pretty=format:%s", at: path)
-
-            return (tag.isEmpty ? nil : tag, log)
         }
     }
 
@@ -417,8 +434,11 @@ final class GitStatusService: ObservableObject {
             guard !trimmedName.isEmpty else {
                 throw GitTagError.emptyName
             }
+            guard GitStatusService.isValidTagName(trimmedName) else {
+                throw GitTagError.invalidName(trimmedName)
+            }
 
-            let existing = self.run("git tag -l \(trimmedName)", at: path)
+            let existing = self.git(["tag", "-l", trimmedName], at: path)
             guard existing.isEmpty else {
                 throw GitTagError.tagExists(trimmedName)
             }
@@ -433,7 +453,7 @@ final class GitStatusService: ObservableObject {
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
 
-            let result = self.runResult("git tag -a \(trimmedName) -F \"\(tempURL.path)\"", at: path)
+            let result = self.gitResult(["tag", "-a", trimmedName, "-F", tempURL.path], at: path)
             guard result.exitCode == 0 else {
                 throw GitTagError.tagFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
             }

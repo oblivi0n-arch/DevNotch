@@ -651,7 +651,7 @@ struct OllamaChatView: View {
         guard let firstLine = parts.first else { return nil }
 
         let name = firstLine.trimmingCharacters(in: .whitespaces)
-        guard name.hasPrefix("v"), name.count > 1 else { return nil }
+        guard GitStatusService.isValidTagName(name) else { return nil }
 
         let rest = parts.count > 1 ? String(parts[1]) : ""
         let message = rest.trimmingCharacters(in: .whitespacesAndNewlines)
