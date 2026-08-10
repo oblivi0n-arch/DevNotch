@@ -7,9 +7,14 @@ private enum ChatMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-private struct PreparedTag {
-    let name: String
-    let message: String
+private struct Feedback {
+    let text: String
+    let isError: Bool
+}
+
+private struct ChangelogSection {
+    let title: String
+    let entries: [String]
 }
 
 @MainActor
@@ -17,38 +22,32 @@ struct OllamaChatView: View {
     @ObservedObject var gitService: GitStatusService
 
     @State private var mode: ChatMode = .commit
+    @State private var note: String = ""
 
-    @State private var commitMessages: [ChatMessage] = []
-    @State private var tagMessages: [ChatMessage] = []
-
-    @State private var draft: String = ""
+    @State private var commitDraft: CommitDraft?
+    @State private var tagDraft: TagDraft?
+    @State private var bumpOverride: TagDraft.Bump?
 
     @State private var stagedDiff: String = ""
     @State private var tagLastTag: String?
     @State private var tagCommitLog: String = ""
 
-    @State private var isStreaming = false
-    @State private var lastError: OllamaError?
-    @State private var actionedMessageIds: Set<UUID> = []
-    @State private var editingMessageId: UUID?
-    @State private var editDraft: String = ""
+    @State private var isGenerating = false
     @State private var isPerformingAction = false
-    @State private var preparedTags: [UUID: PreparedTag] = [:]
+    @State private var didAction = false
+    @State private var lastError: OllamaError?
+    @State private var feedback: Feedback?
+    @State private var contentHeight: CGFloat = 0
 
     @FocusState private var isInputFocused: Bool
 
     private let client = OllamaClient()
 
-    private var messages: [ChatMessage] {
-        get { mode == .commit ? commitMessages : tagMessages }
-        nonmutating set {
-            if mode == .commit {
-                commitMessages = newValue
-            } else {
-                tagMessages = newValue
-            }
-        }
-    }
+    private let popoverWidth: CGFloat = 360
+    private let minContentHeight: CGFloat = 96
+    private let maxContentHeight: CGFloat = 360
+
+    // MARK: - Derived context
 
     private var contextIsEmpty: Bool {
         switch mode {
@@ -57,315 +56,537 @@ struct OllamaChatView: View {
         }
     }
 
-    private var inputPlaceholder: String {
+    private var stagedFileCount: Int {
+        guard !stagedDiff.isEmpty else { return 0 }
+        return stagedDiff.components(separatedBy: "diff --git ").count - 1
+    }
+
+    private var commitCount: Int {
+        guard !tagCommitLog.isEmpty else { return 0 }
+        return tagCommitLog.split(separator: "\n", omittingEmptySubsequences: true).count
+    }
+
+    private var effectiveBump: TagDraft.Bump? {
+        bumpOverride ?? tagDraft?.bump
+    }
+
+    private var nextVersion: SemanticVersion? {
+        guard let effectiveBump else { return nil }
+        return SemanticVersion.next(after: tagLastTag, bump: effectiveBump)
+    }
+
+    private var hasDraft: Bool {
+        mode == .commit ? commitDraft != nil : tagDraft != nil
+    }
+
+    private var headline: String {
         switch mode {
-        case .commit: return "Describe your change..."
-        case .tag: return "Add context for the release notes (optional)..."
+        case .commit:
+            let branch = gitService.status.branch
+            return branch.isEmpty ? "No repository" : branch
+        case .tag:
+            let base = tagLastTag ?? "the start"
+            return commitCount == 1 ? "1 commit since \(base)" : "\(commitCount) commits since \(base)"
         }
     }
 
-    private var lastUserMessage: ChatMessage? {
-        messages.last(where: { $0.role == "user" })
+    private var contextDetail: String? {
+        guard mode == .commit, stagedFileCount > 0 else { return nil }
+        return stagedFileCount == 1 ? "1 staged" : "\(stagedFileCount) staged"
     }
 
-    var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text(client.model)
-                    .font(.system(size: 13, weight: .medium))
-
-                Spacer()
-
-                Picker("Mode", selection: $mode) {
-                    ForEach(ChatMode.allCases) { chatMode in
-                        Text(chatMode.rawValue).tag(chatMode)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .frame(width: 140)
-                .disabled(isStreaming)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-
-            Divider()
-
-            if contextIsEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: mode == .commit ? "tray" : "tag")
-                        .font(.system(size: 24))
-                        .foregroundColor(.secondary)
-                    Text(mode == .commit ? "No staged changes" : "No commits since last tag")
-                        .font(.system(size: 13, weight: .medium))
-                    Text(mode == .commit ? "Run git add first, or stage everything below" : "Commit some changes first")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-
-                    if mode == .commit {
-                        Button(action: stageAll) {
-                            Label("Stage All", systemImage: "plus.circle")
-                        }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                        .padding(.top, 4)
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(messages) { message in
-                                Group {
-                                    if message.role == "system" {
-                                        systemFeedbackView(message)
-                                    } else if message.role == "assistant" && message.content.isEmpty && isStreaming {
-                                        HStack(spacing: 6) {
-                                            ProgressView()
-                                                .controlSize(.small)
-                                            Text("Generating response...")
-                                                .font(.system(size: 12))
-                                                .foregroundColor(.secondary)
-                                        }
-                                        .padding(10)
-                                    } else if message.role == "user" && editingMessageId == message.id {
-                                        editingBubble(message)
-                                    } else {
-                                        VStack(alignment: message.role == "user" ? .trailing : .leading, spacing: 2) {
-                                            Text(message.content)
-                                                .padding(10)
-                                                .background(message.role == "user" ? Color.accentColor.opacity(0.18) : Color(nsColor: .controlBackgroundColor))
-                                                .cornerRadius(10)
-                                                .overlay(alignment: .topTrailing) {
-                                                    if message.role == "user" && message.id == lastUserMessage?.id && !isStreaming && editingMessageId == nil {
-                                                        Button(action: { beginEdit(message) }) {
-                                                            Image(systemName: "pencil.circle.fill")
-                                                                .font(.system(size: 14))
-                                                                .foregroundColor(.secondary)
-                                                                .background(Circle().fill(Color(nsColor: .windowBackgroundColor)))
-                                                        }
-                                                        .buttonStyle(.plain)
-                                                        .offset(x: 10, y: -10)
-                                                    }
-                                                }
-                                        }
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: message.role == "user" ? .trailing : .leading)
-                                .id(message.id)
-                                .transition(.asymmetric(
-                                    insertion: .move(edge: .bottom).combined(with: .opacity),
-                                    removal: .opacity
-                                ))
-                            }
-                        }
-                        .padding(8)
-                    }
-                    .onChange(of: messages.count) {
-                        scrollToBottom(proxy)
-                    }
-                    .onChange(of: messages.last?.content) {
-                        scrollToBottom(proxy)
-                    }
-                }
-            }
-
-            if let error = lastError {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text(error.errorDescription ?? "Something went wrong")
-                            .font(.system(size: 12, weight: .medium))
-                        Spacer()
-                        Button("Retry", action: regenerate)
-                            .buttonStyle(.plain)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                    }
-                    if let suggestion = error.recoverySuggestion {
-                        Text(suggestion)
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                    }
-                }
-                .padding(10)
-                .background(Color.red.opacity(0.12))
-                .cornerRadius(8)
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-            }
-
-            if let lastAssistant = messages.last(where: { $0.role == "assistant" }), !isStreaming, !lastAssistant.content.isEmpty {
-                let alreadyActioned = actionedMessageIds.contains(lastAssistant.id)
-                HStack(spacing: 12) {
-                    Button(action: regenerate) {
-                        Label("Regenerate", systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
-
-                    Button(action: { performAction(for: lastAssistant) }) {
-                        Label(
-                            actionLabel(actioned: alreadyActioned),
-                            systemImage: alreadyActioned ? "checkmark.circle.fill" : "checkmark.circle"
-                        )
-                    }
-                    .disabled(alreadyActioned || isPerformingAction)
-
-                    Spacer()
-                }
-                .padding(.horizontal, 8)
-                .padding(.top, 8)
-            }
-
-            Divider()
-                .padding(.top, 8)
-
-            HStack(spacing: 8) {
-                TextField(inputPlaceholder, text: $draft)
-                    .textFieldStyle(.plain)
-                    .padding(8)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-                    .disabled(contextIsEmpty || isStreaming)
-                    .onSubmit(send)
-                    .focused($isInputFocused)
-
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 22))
-                }
-                .buttonStyle(.plain)
-                .disabled(draft.isEmpty || isStreaming || contextIsEmpty)
-            }
-            .padding(8)
-            .background(.ultraThinMaterial)
-        }
-        .frame(width: 320, height: 420)
-        .task {
-            await loadContext()
-        }
-        .onChange(of: mode) {
-            Task { await loadContext() }
-        }
+    private var inputPlaceholder: String {
+        mode == .commit ? "Add context…" : "Add release context…"
     }
 
-    private func actionLabel(actioned: Bool) -> String {
-        switch (mode, actioned) {
+    private var primaryActionLabel: String {
+        switch (mode, didAction) {
         case (.commit, false): return "Commit"
         case (.commit, true): return "Committed"
-        case (.tag, false): return "Create Tag"
+        case (.tag, false): return nextVersion.map { "Create tag \($0.tagName)" } ?? "Create tag"
         case (.tag, true): return "Tagged"
         }
     }
 
-    private func performAction(for message: ChatMessage) {
-        switch mode {
-        case .commit: performCommit(for: message)
-        case .tag: performCreateTag(for: message)
+    // MARK: - Body
+
+    var body: some View {
+        VStack(spacing: 0) {
+            contextBar
+            modeTabs
+            Divider()
+
+            ScrollView {
+                contentSection
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.size.height
+                    } action: { height in
+                        contentHeight = height
+                    }
+            }
+            .frame(height: min(max(contentHeight, minContentHeight), maxContentHeight))
+
+            if let feedback {
+                feedbackRow(feedback)
+            }
+
+            if hasDraft && !isGenerating {
+                actionBar
+            }
+
+            Divider()
+            inputBar
+        }
+        .frame(width: popoverWidth)
+        .task {
+            await refresh()
+        }
+        .onChange(of: mode) {
+            Task { await refresh() }
         }
     }
 
-    @MainActor
-    private func loadContext() async {
+    // MARK: - Chrome
+
+    private var contextBar: some View {
+        HStack(spacing: 7) {
+            Image(systemName: mode == .commit ? "arrow.triangle.branch" : "tag")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            Text(headline)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 8)
+
+            if let contextDetail {
+                Text(contextDetail)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var modeTabs: some View {
+        HStack(spacing: 18) {
+            ForEach(ChatMode.allCases) { item in
+                Button {
+                    mode = item
+                } label: {
+                    VStack(spacing: 6) {
+                        Text(item.rawValue)
+                            .font(.system(size: 12, weight: mode == item ? .medium : .regular))
+                            .foregroundStyle(mode == item ? Color.primary : Color.secondary)
+                        Rectangle()
+                            .fill(mode == item ? Color.primary : Color.clear)
+                            .frame(height: 1.5)
+                    }
+                    .fixedSize()
+                }
+                .buttonStyle(.plain)
+                .disabled(isGenerating)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 14)
+    }
+
+    private var actionBar: some View {
+        HStack(spacing: 8) {
+            Button(action: performPrimaryAction) {
+                Text(primaryActionLabel)
+                    .font(.system(size: 12, weight: .medium))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(didAction || isPerformingAction)
+
+            Button {
+                Task { await generate() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 12))
+                    .padding(.vertical, 4)
+                    .padding(.horizontal, 4)
+            }
+            .buttonStyle(.bordered)
+            .disabled(isPerformingAction)
+            .help("Regenerate")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var inputBar: some View {
+        HStack(spacing: 8) {
+            TextField(inputPlaceholder, text: $note)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .focused($isInputFocused)
+                .onSubmit { Task { await generate() } }
+                .disabled(contextIsEmpty || isGenerating)
+
+            Button {
+                Task { await generate() }
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .font(.system(size: 18))
+            }
+            .buttonStyle(.plain)
+            .disabled(contextIsEmpty || isGenerating)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 9)
+        .background(.ultraThinMaterial)
+    }
+
+    private func feedbackRow(_ feedback: Feedback) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: feedback.isError ? "xmark.circle.fill" : "checkmark.circle.fill")
+                .foregroundStyle(feedback.isError ? Color.red : Color.green)
+            Text(feedback.text)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+    }
+
+    // MARK: - Content
+
+    @ViewBuilder
+    private var contentSection: some View {
+        if contextIsEmpty {
+            emptyState
+        } else if isGenerating {
+            generatingState
+        } else if let lastError {
+            errorState(lastError)
+        } else if mode == .commit, let commitDraft {
+            commitCard(commitDraft)
+        } else if mode == .tag, let tagDraft {
+            tagCard(tagDraft)
+        } else {
+            idleState
+        }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: mode == .commit ? "tray" : "tag")
+                .font(.system(size: 22))
+                .foregroundStyle(.tertiary)
+            Text(mode == .commit ? "Nothing staged" : "No commits since the last tag")
+                .font(.system(size: 12, weight: .medium))
+            Text(mode == .commit ? "Stage the changes you want to describe" : "Commit some changes first")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            if mode == .commit {
+                Button("Stage all") {
+                    Task {
+                        await gitService.stageAll()
+                        await refresh()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .font(.system(size: 11))
+                .padding(.top, 2)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
+    private var generatingState: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text(mode == .commit ? "Reading the diff…" : "Reading the commit log…")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 34)
+    }
+
+    private var idleState: some View {
+        Text("Nothing generated yet")
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 34)
+    }
+
+    private func errorState(_ error: OllamaError) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text(error.errorDescription ?? "Something went wrong")
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 0)
+            }
+            if let suggestion = error.recoverySuggestion {
+                Text(suggestion)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            Button("Try again") {
+                Task { await generate() }
+            }
+            .buttonStyle(.bordered)
+            .font(.system(size: 11))
+            .padding(.top, 2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+    }
+
+    private func commitCard(_ draft: CommitDraft) -> some View {
+        let subject = draft.subjectLine
+
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Text(draft.type.rawValue)
+                    .font(.system(size: 11, weight: .medium))
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.15), in: Capsule())
+                    .foregroundStyle(Color.accentColor)
+
+                if !draft.scope.isEmpty {
+                    Text(draft.scope)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 8)
+
+                Text("\(subject.count) chars")
+                    .font(.system(size: 11))
+                    .foregroundStyle(subject.count > 72 ? Color.orange : Color.secondary)
+            }
+
+            Text(subject)
+                .font(.system(size: 12.5, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !draft.body.isEmpty {
+                Text(draft.body)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            if !draft.breakingChange.isEmpty {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle")
+                    Text(draft.breakingChange)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(.orange)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+    }
+
+    private func tagCard(_ draft: TagDraft) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Text(tagLastTag ?? "start")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 9))
+                    .foregroundStyle(.tertiary)
+                Text(nextVersion?.tagName ?? "—")
+                    .font(.system(size: 17, weight: .medium, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(TagDraft.Bump.allCases, id: \.self) { bump in
+                    Button {
+                        bumpOverride = bump
+                    } label: {
+                        Text(bump.rawValue)
+                            .font(.system(size: 11))
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(effectiveBump == bump ? Color.primary.opacity(0.08) : Color.clear)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 6)
+                                    .stroke(
+                                        Color.secondary.opacity(effectiveBump == bump ? 0.55 : 0.22),
+                                        lineWidth: 0.5
+                                    )
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                Spacer(minLength: 0)
+            }
+
+            ForEach(changelogSections(of: draft), id: \.title) { section in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(section.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(section.entries, id: \.self) { entry in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("•")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.tertiary)
+                            Text(entry)
+                                .font(.system(size: 12))
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+    }
+
+    private func changelogSections(of draft: TagDraft) -> [ChangelogSection] {
+        [
+            ChangelogSection(title: "Added", entries: draft.added),
+            ChangelogSection(title: "Fixed", entries: draft.fixed),
+            ChangelogSection(title: "Performance", entries: draft.performance),
+            ChangelogSection(title: "Changed", entries: draft.changed),
+            ChangelogSection(title: "Other", entries: draft.other)
+        ].filter { !$0.entries.isEmpty }
+    }
+
+    // MARK: - Work
+
+    private func refresh() async {
+        commitDraft = nil
+        tagDraft = nil
+        bumpOverride = nil
+        didAction = false
+        feedback = nil
+        lastError = nil
+
         switch mode {
         case .commit:
             stagedDiff = await gitService.stagedDiff()
-            if !stagedDiff.isEmpty {
-                isInputFocused = true
-            }
         case .tag:
             let context = await gitService.commitsSinceLastTag()
             tagLastTag = context.lastTag
             tagCommitLog = context.log
-            if !tagCommitLog.isEmpty {
-                isInputFocused = true
-            }
         }
+
+        guard !contextIsEmpty else { return }
+        isInputFocused = true
+        await generate()
     }
 
-    @MainActor
-    private func stageAll() {
-        Task {
-            await gitService.stageAll()
-            await loadContext()
-        }
-    }
+    private func generate() async {
+        guard !contextIsEmpty, !isGenerating else { return }
 
-    private func send() {
-        let userText = draft
-        draft = ""
-        withAnimation(.easeOut(duration: 0.2)) {
-            messages.append(ChatMessage(role: "user", content: userText))
-        }
-        generateResponse()
-    }
-
-    @MainActor
-    private func generateResponse() {
+        isGenerating = true
         lastError = nil
-        withAnimation(.easeOut(duration: 0.2)) {
-            messages.append(ChatMessage(role: "assistant", content: ""))
+        feedback = nil
+        didAction = false
+        bumpOverride = nil
+
+        var request = [OllamaMessage(
+            role: "system",
+            content: mode == .commit ? commitSystemPrompt : tagSystemPrompt
+        )]
+
+        let trimmedNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedNote.isEmpty {
+            request.append(OllamaMessage(role: "user", content: trimmedNote))
         }
-        isStreaming = true
 
-        let systemPrompt = mode == .commit ? commitSystemPrompt : tagSystemPrompt
-        var history: [OllamaMessage] = [OllamaMessage(role: "system", content: systemPrompt)]
-        history += messages.dropLast()
-            .filter { $0.role == "user" || $0.role == "assistant" }
-            .map { OllamaMessage(role: $0.role, content: $0.content) }
+        do {
+            switch mode {
+            case .commit:
+                commitDraft = try await client.complete(
+                    CommitDraft.self,
+                    messages: request,
+                    schema: CommitDraft.jsonSchema
+                )
+            case .tag:
+                tagDraft = try await client.complete(
+                    TagDraft.self,
+                    messages: request,
+                    schema: TagDraft.jsonSchema
+                )
+            }
+        } catch {
+            lastError = (error as? OllamaError) ?? .connectionFailed
+        }
 
-        let currentMode = mode
-        let baseTag = tagLastTag
+        isGenerating = false
+    }
+
+    private func performPrimaryAction() {
+        switch mode {
+        case .commit: performCommit()
+        case .tag: performCreateTag()
+        }
+    }
+
+    private func performCommit() {
+        guard let commitDraft, !isPerformingAction else { return }
+        isPerformingAction = true
 
         Task {
+            defer { isPerformingAction = false }
             do {
-                let rendered: String
-                var prepared: PreparedTag?
-
-                switch currentMode {
-                case .commit:
-                    let draft = try await client.complete(
-                        CommitDraft.self,
-                        messages: history,
-                        schema: CommitDraft.jsonSchema
-                    )
-                    rendered = draft.renderedMessage
-
-                case .tag:
-                    let draft = try await client.complete(
-                        TagDraft.self,
-                        messages: history,
-                        schema: TagDraft.jsonSchema
-                    )
-                    let version = SemanticVersion.next(after: baseTag, bump: draft.bump)
-                    prepared = PreparedTag(name: version.tagName, message: draft.changelog)
-                    rendered = "\(version.tagName)\n\n\(draft.changelog)"
-                }
-
-                guard let index = messages.indices.last else {
-                    isStreaming = false
-                    return
-                }
-                messages[index].content = rendered
-                if let prepared {
-                    preparedTags[messages[index].id] = prepared
-                }
-                isStreaming = false
-
+                try await gitService.commit(message: commitDraft.renderedMessage)
+                didAction = true
+                feedback = Feedback(text: "Committed to \(gitService.status.branch)", isError: false)
             } catch {
-                messages.removeLast()
-                lastError = (error as? OllamaError) ?? .connectionFailed
-                isStreaming = false
+                let reason = (error as? GitCommitError)?.errorDescription ?? error.localizedDescription
+                feedback = Feedback(text: reason, isError: true)
             }
         }
     }
-    
+
+    private func performCreateTag() {
+        guard let tagDraft, let nextVersion, !isPerformingAction else { return }
+        isPerformingAction = true
+
+        Task {
+            defer { isPerformingAction = false }
+            do {
+                try await gitService.createAnnotatedTag(
+                    name: nextVersion.tagName,
+                    message: tagDraft.changelog
+                )
+                didAction = true
+                feedback = Feedback(text: "Created tag \(nextVersion.tagName)", isError: false)
+            } catch {
+                let reason = (error as? GitTagError)?.errorDescription ?? error.localizedDescription
+                feedback = Feedback(text: reason, isError: true)
+            }
+        }
+    }
+
+    // MARK: - Prompts
+
     private var commitSystemPrompt: String {
         """
         ROLE
@@ -430,142 +651,5 @@ struct OllamaChatView: View {
         COMMITS SINCE \(baseVersion)
         \(tagCommitLog)
         """
-    }
-
-    private func regenerate() {
-        guard !isStreaming else { return }
-        if let lastAssistantIndex = messages.lastIndex(where: { $0.role == "assistant" }) {
-            messages.removeSubrange(lastAssistantIndex...)
-        }
-        guard messages.last?.role == "user" else { return }
-        generateResponse()
-    }
-
-    private func beginEdit(_ message: ChatMessage) {
-        guard !isStreaming else { return }
-        editDraft = message.content
-        editingMessageId = message.id
-    }
-
-    private func cancelEdit() {
-        editingMessageId = nil
-        editDraft = ""
-    }
-
-    private func saveEdit(for message: ChatMessage) {
-        guard let index = messages.firstIndex(where: { $0.id == message.id }) else { return }
-        let newText = editDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newText.isEmpty else { return }
-
-        messages[index].content = newText
-        if messages.count > index + 1 {
-            messages.removeSubrange((index + 1)...)
-        }
-
-        editingMessageId = nil
-        editDraft = ""
-        generateResponse()
-    }
-
-    @ViewBuilder
-    private func editingBubble(_ message: ChatMessage) -> some View {
-        HStack(spacing: 6) {
-            TextField("Edit message...", text: $editDraft)
-                .textFieldStyle(.plain)
-                .padding(8)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.accentColor.opacity(0.6), lineWidth: 1)
-                )
-                .onSubmit { saveEdit(for: message) }
-
-            Button(action: { saveEdit(for: message) }) {
-                Image(systemName: "checkmark.circle.fill")
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(.accentColor)
-
-            Button(action: cancelEdit) {
-                Image(systemName: "xmark.circle")
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    @MainActor
-    private func performCommit(for message: ChatMessage) {
-        guard !isPerformingAction else { return }
-        isPerformingAction = true
-
-        Task {
-            defer { isPerformingAction = false }
-            do {
-                try await gitService.commit(message: message.content)
-                actionedMessageIds.insert(message.id)
-                withAnimation(.easeOut(duration: 0.2)) {
-                    messages.append(ChatMessage(role: "system", content: "✅ Committed successfully"))
-                }
-            } catch {
-                let reason = (error as? GitCommitError)?.errorDescription ?? error.localizedDescription
-                withAnimation(.easeOut(duration: 0.2)) {
-                    messages.append(ChatMessage(role: "system", content: "❌ Commit failed: \(reason)"))
-                }
-            }
-        }
-    }
-
-    @MainActor
-    private func performCreateTag(for message: ChatMessage) {
-        guard let prepared = preparedTags[message.id] else {
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "❌ No version prepared for this response"))
-            }
-            return
-        }
-
-        guard !isPerformingAction else { return }
-        isPerformingAction = true
-
-        Task {
-            defer { isPerformingAction = false }
-            do {
-                try await gitService.createAnnotatedTag(name: prepared.name, message: prepared.message)
-                actionedMessageIds.insert(message.id)
-                withAnimation(.easeOut(duration: 0.2)) {
-                    messages.append(ChatMessage(role: "system", content: "✅ Created tag \(prepared.name)"))
-                }
-            } catch {
-                let reason = (error as? GitTagError)?.errorDescription ?? error.localizedDescription
-                withAnimation(.easeOut(duration: 0.2)) {
-                    messages.append(ChatMessage(role: "system", content: "❌ Tag creation failed: \(reason)"))
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private func systemFeedbackView(_ message: ChatMessage) -> some View {
-        let isError = message.content.hasPrefix("❌")
-        HStack(spacing: 6) {
-            Image(systemName: isError ? "xmark.circle.fill" : "checkmark.circle.fill")
-                .foregroundColor(isError ? .red : .green)
-            Text(message.content)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.primary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity)
-        .background((isError ? Color.red : Color.green).opacity(0.12))
-        .cornerRadius(8)
-    }
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        guard let lastId = messages.last?.id else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo(lastId, anchor: .bottom)
-        }
     }
 }

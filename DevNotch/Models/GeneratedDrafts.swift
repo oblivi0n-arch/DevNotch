@@ -23,6 +23,10 @@ struct CommitDraft: Decodable {
         "required": ["type", "scope", "summary", "body", "breakingChange"]
     ]
 
+    var subjectLine: String {
+        renderedMessage.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? ""
+    }
+
     var renderedMessage: String {
         var header = type.rawValue
 
@@ -57,7 +61,7 @@ struct CommitDraft: Decodable {
 }
 
 struct TagDraft: Decodable {
-    enum Bump: String, Decodable {
+    enum Bump: String, Decodable, CaseIterable, Hashable {
         case major, minor, patch
     }
 

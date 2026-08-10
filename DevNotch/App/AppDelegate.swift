@@ -64,7 +64,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover = NSPopover()
         popover.delegate = self
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 320, height: 400)
     }
     
     func applicationWillTerminate(_ notification: Notification) {
