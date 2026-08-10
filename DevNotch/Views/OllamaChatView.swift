@@ -72,7 +72,18 @@ struct OllamaChatView: View {
 
     private var nextVersion: SemanticVersion? {
         guard let effectiveBump else { return nil }
-        return SemanticVersion.next(after: tagLastTag, bump: effectiveBump)
+        return version(for: effectiveBump)
+    }
+
+    private func version(for bump: TagDraft.Bump) -> SemanticVersion {
+        SemanticVersion.next(after: tagLastTag, bump: bump)
+    }
+
+    private func suggestedBump(from modelBump: TagDraft.Bump) -> TagDraft.Bump {
+        guard modelBump == .major else { return modelBump }
+
+        let currentMajor = tagLastTag.flatMap(SemanticVersion.init(tag:))?.major ?? 0
+        return currentMajor == 0 ? .minor : .major
     }
 
     private var hasDraft: Bool {
@@ -528,11 +539,13 @@ struct OllamaChatView: View {
                     schema: CommitDraft.jsonSchema
                 )
             case .tag:
-                tagDraft = try await client.complete(
+                let draft = try await client.complete(
                     TagDraft.self,
                     messages: request,
                     schema: TagDraft.jsonSchema
                 )
+                tagDraft = draft
+                bumpOverride = suggestedBump(from: draft.bump)
             }
         } catch {
             lastError = (error as? OllamaError) ?? .connectionFailed

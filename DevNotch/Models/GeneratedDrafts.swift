@@ -135,9 +135,7 @@ struct SemanticVersion: Equatable {
     func bumped(_ bump: TagDraft.Bump) -> SemanticVersion {
         switch bump {
         case .major:
-            return major == 0
-                ? SemanticVersion(major: 0, minor: minor + 1, patch: 0)
-                : SemanticVersion(major: major + 1, minor: 0, patch: 0)
+            return SemanticVersion(major: major + 1, minor: 0, patch: 0)
         case .minor:
             return SemanticVersion(major: major, minor: minor + 1, patch: 0)
         case .patch:
