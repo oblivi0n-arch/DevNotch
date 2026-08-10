@@ -259,12 +259,12 @@ final class GitStatusService: ObservableObject {
 
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        process.standardError = FileHandle.nullDevice
 
         do {
             try process.run()
-            process.waitUntilExit()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
             return String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         } catch {
             return ""
@@ -284,9 +284,18 @@ final class GitStatusService: ObservableObject {
 
         do {
             try process.run()
-            process.waitUntilExit()
+
+            var errData = Data()
+            let errQueue = DispatchQueue(label: "devnotch.git.stderr")
+            errQueue.async {
+                errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            }
+
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
+            errQueue.sync { }
+
+            process.waitUntilExit()
+
             let output = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let errorOutput = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return (output, errorOutput, process.terminationStatus)
