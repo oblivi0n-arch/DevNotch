@@ -22,6 +22,15 @@ enum GitOperation: String, Equatable {
     }
 }
 
+struct RemoteBranchInfo: Equatable, Identifiable {
+    let name: String
+    let author: String
+    let relativeDate: String
+    let committedAt: Date
+
+    var id: String { name }
+}
+
 struct GitStatus: Equatable {
     var branch: String = ""
     var stagedCount: Int = 0
@@ -38,6 +47,7 @@ struct GitStatus: Equatable {
     var operationProgress: String = ""
     var lastCommitSubject: String = ""
     var lastCommitRelative: String = ""
+    var remoteBranches: [RemoteBranchInfo] = []
 
     var totalChanges: Int {
         stagedCount + modifiedCount + untrackedCount + conflictedCount
