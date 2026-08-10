@@ -9,7 +9,7 @@ enum GitOperation: String, Equatable {
     case cherryPicking
     case reverting
     case bisecting
-
+    
     var label: String? {
         switch self {
         case .none: return nil
@@ -20,6 +20,24 @@ enum GitOperation: String, Equatable {
         case .bisecting: return "BISECTING"
         }
     }
+}
+
+struct RemoteBranchInfo: Equatable, Identifiable {
+    let name: String
+    let author: String
+    let relativeDate: String
+    let committedAt: Date
+    let sha: String
+    
+    var id: String { name }
+}
+
+struct FileCollision: Equatable, Identifiable {
+    let branch: String
+    let author: String
+    let files: [String]
+    
+    var id: String { branch }
 }
 
 struct GitStatus: Equatable {
@@ -38,15 +56,17 @@ struct GitStatus: Equatable {
     var operationProgress: String = ""
     var lastCommitSubject: String = ""
     var lastCommitRelative: String = ""
-
+    var remoteBranches: [RemoteBranchInfo] = []
+    var collisions: [FileCollision] = []
+    
     var totalChanges: Int {
         stagedCount + modifiedCount + untrackedCount + conflictedCount
     }
-
+    
     var isDirty: Bool { totalChanges > 0 }
-
+    
     var needsAttention: Bool {
-        conflictedCount > 0 || operation != .none || (behindCount > 0 && isDirty)
+        conflictedCount > 0 || operation != .none || !collisions.isEmpty || (behindCount > 0 && isDirty)
     }
 }
 
@@ -55,7 +75,7 @@ enum GitCommitError: LocalizedError {
     case emptyMessage
     case writeFailed
     case commitFailed(String)
-
+    
     var errorDescription: String? {
         switch self {
         case .noRepo:
@@ -77,7 +97,7 @@ enum GitTagError: LocalizedError {
     case tagExists(String)
     case writeFailed
     case tagFailed(String)
-
+    
     var errorDescription: String? {
         switch self {
         case .noRepo:
@@ -102,22 +122,26 @@ final class GitStatusService: ObservableObject {
         return name.range(of: pattern, options: .regularExpression) != nil
     }
     @Published private(set) var status = GitStatus()
-
+    
     private let appModeService: AppModeService
     private var modeCancellable: AnyCancellable?
-
+    
     private var currentRepoPath: String?
     private var eventStream: FSEventStreamRef?
     private var refreshWorkItem: DispatchWorkItem?
     private let gitQueue = DispatchQueue(label: "devnotch.git", qos: .utility)
     private let fetchQueue = DispatchQueue(label: "devnotch.git.fetch", qos: .background)
-
+    
     private var fetchTimer: DispatchSourceTimer?
     private let fetchInterval: TimeInterval = 180
     private let fetchTimeout: TimeInterval = 20
-
+    private let remoteBranchMaxAge: TimeInterval = 14 * 24 * 60 * 60
+    private let remoteBranchLimit = 10
+    private var remoteFileCache: [String: Set<String>] = [:]
+    private let remoteFileCacheLimit = 60
+    
     private var didStart = false
-
+    
     init(appModeService: AppModeService) {
         self.appModeService = appModeService
     }
@@ -125,37 +149,37 @@ final class GitStatusService: ObservableObject {
     func checkForActiveRepo() {
         recomputeActiveRepo()
     }
-
+    
     func start() {
         guard !didStart else { return }
         didStart = true
-
+        
         modeCancellable = appModeService.$mode
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 self?.recomputeActiveRepo()
             }
-
+        
         DispatchQueue.main.async { [weak self] in
             self?.recomputeActiveRepo()
         }
     }
-
+    
     deinit {
         fetchTimer?.cancel()
         stopWatchingRepo()
     }
-
+    
     private func recomputeActiveRepo() {
         dispatchPrecondition(condition: .onQueue(.main))
-
+        
         guard case .dev(let devApp) = appModeService.mode,
               let frontApp = NSWorkspace.shared.frontmostApplication else {
             return
         }
-
+        
         let frontPID = frontApp.processIdentifier
-
+        
         switch devApp {
         case .xcode:
             applyResolvedPath(resolveXcodeRepoPath())
@@ -166,27 +190,28 @@ final class GitStatusService: ObservableObject {
             }
         }
     }
-
+    
     private func applyResolvedPath(_ path: String?) {
         gitQueue.async { [weak self] in
             guard let self else { return }
             guard path != self.currentRepoPath else { return }
-
+            
             self.currentRepoPath = path
-
+            self.remoteFileCache.removeAll()
+            
             guard let path else {
                 self.stopWatchingRepo()
                 self.stopFetchTimer()
                 DispatchQueue.main.async { self.status = GitStatus() }
                 return
             }
-
+            
             self.watchRepo(at: path)
             self.startFetchTimer()
             self.refreshStatus(at: path)
         }
     }
-
+    
     private func resolveTerminalRepoPath(terminalPID: pid_t) -> String? {
         let snapshot = ProcessInspector.snapshotAllProcesses()
         guard let shellPID = ProcessInspector.findShellPID(startingAt: terminalPID, in: snapshot),
@@ -195,7 +220,7 @@ final class GitStatusService: ObservableObject {
         }
         return findRepoRoot(startingAt: URL(fileURLWithPath: cwd)) ?? cwd
     }
-
+    
     private func resolveXcodeRepoPath() -> String? {
         let script = """
         tell application "Xcode"
@@ -203,19 +228,19 @@ final class GitStatusService: ObservableObject {
             return path of active workspace document
         end tell
         """
-
+        
         var error: NSDictionary?
         guard let scriptObject = NSAppleScript(source: script) else { return nil }
         let output = scriptObject.executeAndReturnError(&error)
-
+        
         if error != nil { return nil }
-
+        
         guard let projectPath = output.stringValue, !projectPath.isEmpty else { return nil }
-
+        
         let projectURL = URL(fileURLWithPath: projectPath)
         return findRepoRoot(startingAt: projectURL.deletingLastPathComponent())
     }
-
+    
     private func findRepoRoot(startingAt url: URL, maxLevels: Int = 6) -> String? {
         var current = url
         for _ in 0..<maxLevels {
@@ -229,16 +254,16 @@ final class GitStatusService: ObservableObject {
         }
         return nil
     }
-
+    
     private func watchRepo(at path: String) {
         stopWatchingRepo()
-
+        
         let gitDir = (path as NSString).appendingPathComponent(".git")
         guard FileManager.default.fileExists(atPath: gitDir) else {
             DispatchQueue.main.async { self.status = GitStatus(repoPath: path) }
             return
         }
-
+        
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(self).toOpaque(),
@@ -246,13 +271,13 @@ final class GitStatusService: ObservableObject {
             release: nil,
             copyDescription: nil
         )
-
+        
         let callback: FSEventStreamCallback = { _, info, _, _, _, _ in
             guard let info = info else { return }
             let service = Unmanaged<GitStatusService>.fromOpaque(info).takeUnretainedValue()
             service.scheduleRefresh()
         }
-
+        
         let stream = FSEventStreamCreate(
             kCFAllocatorDefault,
             callback,
@@ -262,13 +287,13 @@ final class GitStatusService: ObservableObject {
             0.3,
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagNone)
         )
-
+        
         guard let stream = stream else { return }
         FSEventStreamSetDispatchQueue(stream, gitQueue)
         FSEventStreamStart(stream)
         eventStream = stream
     }
-
+    
     private func stopWatchingRepo() {
         guard let stream = eventStream else { return }
         FSEventStreamStop(stream)
@@ -276,7 +301,7 @@ final class GitStatusService: ObservableObject {
         FSEventStreamRelease(stream)
         eventStream = nil
     }
-
+    
     private func scheduleRefresh() {
         refreshWorkItem?.cancel()
         guard let path = currentRepoPath else { return }
@@ -286,69 +311,79 @@ final class GitStatusService: ObservableObject {
         refreshWorkItem = item
         gitQueue.asyncAfter(deadline: .now() + 0.2, execute: item)
     }
-
+    
     private func refreshStatus(at path: String) {
         gitQueue.async { [weak self] in
             guard let self = self else { return }
-
+            
             var result = GitStatus(repoPath: path)
-
+            
             let isRepo = self.git(["rev-parse", "--is-inside-work-tree"], at: path)
             guard isRepo == "true" else {
                 DispatchQueue.main.async { self.status = result }
                 return
             }
             result.isValidRepo = true
-
+            
             let statusOutput = self.git(["status", "--porcelain=v1", "-b"], at: path)
             let lines = statusOutput.split(separator: "\n", omittingEmptySubsequences: true)
-
+            
             if let firstLine = lines.first {
                 let branchInfo = firstLine.dropFirst(min(3, firstLine.count))
                 result.branch = self.parseBranchName(from: branchInfo)
-
+                
                 let (hasUpstream, ahead, behind) = self.parseAheadBehind(from: branchInfo)
                 result.hasUpstream = hasUpstream
                 result.aheadCount = ahead
                 result.behindCount = behind
             }
-
+            
             let counts = self.parseCounts(from: lines.dropFirst())
             result.stagedCount = counts.staged
             result.modifiedCount = counts.modified
             result.untrackedCount = counts.untracked
             result.conflictedCount = counts.conflicted
-
+            result.remoteBranches = self.readRemoteBranches(at: path, currentBranch: result.branch)
+            
+            let headSHA = self.git(["rev-parse", "HEAD"], at: path)
+            let localPaths = self.parseChangedPaths(from: lines.dropFirst())
+            result.collisions = self.detectCollisions(
+                at: path,
+                headSHA: headSHA,
+                localPaths: localPaths,
+                branches: result.remoteBranches
+            )
+            
             let operation = self.detectOperation(at: path)
             result.operation = operation.kind
             result.operationProgress = operation.progress
-
+            
             let lastCommit = self.git(["log", "-1", "--pretty=format:%s%n%cr"], at: path)
             let commitLines = lastCommit.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
             result.lastCommitSubject = commitLines.first.map(String.init) ?? ""
             result.lastCommitRelative = commitLines.count > 1 ? String(commitLines[1]) : ""
-
+            
             let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
             result.lastTag = tag.isEmpty ? "no tags" : tag
-
+            
             DispatchQueue.main.async { self.status = result }
         }
     }
-
+    
     private func parseCounts(
         from lines: ArraySlice<Substring>
     ) -> (staged: Int, modified: Int, untracked: Int, conflicted: Int) {
         let conflictCodes: Set<String> = ["DD", "AU", "UD", "UA", "DU", "AA", "UU"]
-
+        
         var staged = 0
         var modified = 0
         var untracked = 0
         var conflicted = 0
-
+        
         for line in lines {
             guard line.count >= 2 else { continue }
             let code = String(line.prefix(2))
-
+            
             if code == "??" {
                 untracked += 1
                 continue
@@ -357,55 +392,162 @@ final class GitStatusService: ObservableObject {
                 conflicted += 1
                 continue
             }
-
+            
             let index = code[code.startIndex]
             let worktree = code[code.index(after: code.startIndex)]
-
+            
             if index != " " { staged += 1 }
             if worktree != " " { modified += 1 }
         }
-
+        
         return (staged, modified, untracked, conflicted)
     }
-
+    
     private func detectOperation(at path: String) -> (kind: GitOperation, progress: String) {
         let gitDir = (path as NSString).appendingPathComponent(".git")
         let fileManager = FileManager.default
-
+        
         func exists(_ component: String) -> Bool {
             fileManager.fileExists(atPath: (gitDir as NSString).appendingPathComponent(component))
         }
-
+        
         func read(_ relativePath: String) -> Int? {
             let full = (gitDir as NSString).appendingPathComponent(relativePath)
             guard let raw = try? String(contentsOfFile: full, encoding: .utf8) else { return nil }
             return Int(raw.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-
+        
         if exists("rebase-merge") || exists("rebase-apply") {
             let directory = exists("rebase-merge") ? "rebase-merge" : "rebase-apply"
             let done = read("\(directory)/msgnum") ?? read("\(directory)/next")
             let total = read("\(directory)/end") ?? read("\(directory)/last")
-
+            
             if let done, let total {
                 return (.rebasing, "\(done)/\(total)")
             }
             return (.rebasing, "")
         }
-
+        
         if exists("MERGE_HEAD") { return (.merging, "") }
         if exists("CHERRY_PICK_HEAD") { return (.cherryPicking, "") }
         if exists("REVERT_HEAD") { return (.reverting, "") }
         if exists("BISECT_LOG") { return (.bisecting, "") }
-
+        
         return (.none, "")
     }
-
+    
+    private func shortBranchName(_ ref: String) -> String {
+        guard let slash = ref.firstIndex(of: "/") else { return ref }
+        return String(ref[ref.index(after: slash)...])
+    }
+    
+    private func readRemoteBranches(at path: String, currentBranch: String) -> [RemoteBranchInfo] {
+        let separator = "\u{1f}"
+        let format = [
+            "%(refname:short)",
+            "%(authorname)",
+            "%(committerdate:relative)",
+            "%(committerdate:unix)",
+            "%(objectname)"
+        ].joined(separator: separator)
+        
+        let raw = git([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=\(format)",
+            "refs/remotes"
+        ], at: path)
+        
+        guard !raw.isEmpty else { return [] }
+        
+        let cutoff = Date().addingTimeInterval(-remoteBranchMaxAge)
+        
+        let branches = raw.split(separator: "\n").compactMap { line -> RemoteBranchInfo? in
+            let fields = line.components(separatedBy: separator)
+            guard fields.count == 5 else { return nil }
+            
+            let name = fields[0]
+            guard !name.hasSuffix("/HEAD") else { return nil }
+            guard shortBranchName(name) != currentBranch else { return nil }
+            
+            guard let unix = TimeInterval(fields[3]) else { return nil }
+            let committedAt = Date(timeIntervalSince1970: unix)
+            guard committedAt > cutoff else { return nil }
+            
+            return RemoteBranchInfo(
+                name: name,
+                author: fields[1],
+                relativeDate: fields[2],
+                committedAt: committedAt,
+                sha: fields[4],
+            )
+        }
+        
+        return Array(branches.prefix(remoteBranchLimit))
+    }
+    
+    private func parseChangedPaths(from lines: ArraySlice<Substring>) -> Set<String> {
+        var paths: Set<String> = []
+        
+        for line in lines {
+            guard line.count > 3 else { continue }
+            var path = String(line.dropFirst(3))
+            
+            if let arrow = path.range(of: " -> ") {
+                path = String(path[arrow.upperBound...])
+            }
+            if path.hasPrefix("\"") && path.hasSuffix("\"") && path.count > 1 {
+                path = String(path.dropFirst().dropLast())
+            }
+            
+            paths.insert(path)
+        }
+        
+        return paths
+    }
+    
+    private func detectCollisions(
+        at path: String,
+        headSHA: String,
+        localPaths: Set<String>,
+        branches: [RemoteBranchInfo]
+    ) -> [FileCollision] {
+        guard !headSHA.isEmpty, !localPaths.isEmpty else { return [] }
+        
+        if remoteFileCache.count > remoteFileCacheLimit {
+            remoteFileCache.removeAll()
+        }
+        
+        var collisions: [FileCollision] = []
+        
+        for branch in branches {
+            let key = "\(headSHA):\(branch.sha)"
+            let remoteFiles: Set<String>
+            
+            if let cached = remoteFileCache[key] {
+                remoteFiles = cached
+            } else {
+                let raw = git(["diff", "--name-only", "\(headSHA)...\(branch.sha)"], at: path)
+                remoteFiles = Set(raw.split(separator: "\n").map(String.init))
+                remoteFileCache[key] = remoteFiles
+            }
+            
+            let shared = localPaths.intersection(remoteFiles).sorted()
+            guard !shared.isEmpty else { continue }
+            
+            collisions.append(
+                FileCollision(branch: branch.name, author: branch.author, files: shared)
+            )
+        }
+        
+        return collisions
+    }
+    
     // MARK: - Remote refresh
-
+    
     private func startFetchTimer() {
         fetchTimer?.cancel()
-
+        
         let timer = DispatchSource.makeTimerSource(queue: gitQueue)
         timer.schedule(deadline: .now() + 5, repeating: fetchInterval)
         timer.setEventHandler { [weak self] in
@@ -414,16 +556,16 @@ final class GitStatusService: ObservableObject {
         timer.resume()
         fetchTimer = timer
     }
-
+    
     private func stopFetchTimer() {
         fetchTimer?.cancel()
         fetchTimer = nil
     }
-
+    
     private func dispatchFetch() {
         guard let path = currentRepoPath else { return }
         guard !git(["remote"], at: path).isEmpty else { return }
-
+        
         fetchQueue.async { [weak self] in
             guard let self else { return }
             self.performFetch(at: path)
@@ -432,7 +574,7 @@ final class GitStatusService: ObservableObject {
             }
         }
     }
-
+    
     private func performFetch(at path: String) {
         let process = Process()
         process.executableURL = Self.gitExecutableURL
@@ -441,28 +583,28 @@ final class GitStatusService: ObservableObject {
         process.environment = Self.gitEnvironment
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
-
+        
         do {
             try process.run()
         } catch {
             return
         }
-
+        
         let watchdog = DispatchWorkItem {
             if process.isRunning { process.terminate() }
         }
         DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + fetchTimeout, execute: watchdog)
-
+        
         process.waitUntilExit()
         watchdog.cancel()
     }
-
+    
     private static let gitExecutableURL: URL = {
         let candidates = ["/usr/bin/git", "/opt/homebrew/bin/git", "/usr/local/bin/git"]
         let path = candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/usr/bin/git"
         return URL(fileURLWithPath: path)
     }()
-
+    
     private static let gitEnvironment: [String: String] = {
         var environment = ProcessInfo.processInfo.environment
         environment["GIT_TERMINAL_PROMPT"] = "0"
@@ -472,18 +614,18 @@ final class GitStatusService: ObservableObject {
         environment["GIT_OPTIONAL_LOCKS"] = "0"
         return environment
     }()
-
+    
     private func git(_ arguments: [String], at path: String) -> String {
         let process = Process()
         process.executableURL = Self.gitExecutableURL
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
         process.environment = Self.gitEnvironment
-
+        
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-
+        
         do {
             try process.run()
             let data = pipe.fileHandleForReading.readDataToEndOfFile()
@@ -493,33 +635,33 @@ final class GitStatusService: ObservableObject {
             return ""
         }
     }
-
+    
     private func gitResult(_ arguments: [String], at path: String) -> (output: String, errorOutput: String, exitCode: Int32) {
         let process = Process()
         process.executableURL = Self.gitExecutableURL
         process.arguments = arguments
         process.currentDirectoryURL = URL(fileURLWithPath: path)
         process.environment = Self.gitEnvironment
-
+        
         let outPipe = Pipe()
         let errPipe = Pipe()
         process.standardOutput = outPipe
         process.standardError = errPipe
-
+        
         do {
             try process.run()
-
+            
             var errData = Data()
             let errQueue = DispatchQueue(label: "devnotch.git.stderr")
             errQueue.async {
                 errData = errPipe.fileHandleForReading.readDataToEndOfFile()
             }
-
+            
             let outData = outPipe.fileHandleForReading.readDataToEndOfFile()
             errQueue.sync { }
-
+            
             process.waitUntilExit()
-
+            
             let output = String(data: outData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             let errorOutput = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             return (output, errorOutput, process.terminationStatus)
@@ -530,15 +672,15 @@ final class GitStatusService: ObservableObject {
     
     private func parseBranchName(from branchInfo: Substring) -> String {
         var name = branchInfo
-
+        
         if let separator = name.range(of: "...") {
             name = name[name.startIndex..<separator.lowerBound]
         } else if let bracket = name.firstIndex(of: "[") {
             name = name[name.startIndex..<bracket]
         }
-
+        
         let trimmed = name.trimmingCharacters(in: .whitespaces)
-
+        
         if trimmed.hasPrefix("No commits yet on ") {
             return String(trimmed.dropFirst("No commits yet on ".count))
         }
@@ -552,10 +694,10 @@ final class GitStatusService: ObservableObject {
         guard branchInfo.contains("...") else {
             return (false, 0, 0)
         }
-
+        
         var ahead = 0
         var behind = 0
-
+        
         if let bracketStart = branchInfo.firstIndex(of: "["),
            let bracketEnd = branchInfo.firstIndex(of: "]") {
             let content = branchInfo[branchInfo.index(after: bracketStart)..<bracketEnd]
@@ -568,12 +710,12 @@ final class GitStatusService: ObservableObject {
                 }
             }
         }
-
+        
         return (true, ahead, behind)
     }
     
     // MARK: - Queue bridging
-
+    
     private func onGitQueue<T>(_ work: @escaping () -> T) async -> T {
         await withCheckedContinuation { continuation in
             gitQueue.async {
@@ -581,7 +723,7 @@ final class GitStatusService: ObservableObject {
             }
         }
     }
-
+    
     private func onGitQueueThrowing<T>(_ work: @escaping () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             gitQueue.async {
@@ -593,14 +735,14 @@ final class GitStatusService: ObservableObject {
             }
         }
     }
-
+    
     func stagedDiff() async -> String {
         await onGitQueue {
             guard let path = self.currentRepoPath else { return "" }
             return self.git(["diff", "--staged"], at: path)
         }
     }
-
+    
     func stageAll() async {
         await onGitQueue {
             guard let path = self.currentRepoPath else { return }
@@ -608,21 +750,21 @@ final class GitStatusService: ObservableObject {
             self.scheduleRefresh()
         }
     }
-
+    
     func commitsSinceLastTag() async -> (lastTag: String?, commits: [ParsedCommit]) {
         await onGitQueue {
             guard let path = self.currentRepoPath else { return (nil, []) }
-
+            
             let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
-
+            
             // %x1f separates subject from body, %x1e separates records.
             var logArguments = ["log", "--reverse", "--pretty=format:%s%x1f%b%x1e"]
             if !tag.isEmpty {
                 logArguments.append("\(tag)..HEAD")
             }
-
+            
             let raw = self.git(logArguments, at: path)
-
+            
             let commits = raw
                 .components(separatedBy: "\u{1e}")
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -634,11 +776,11 @@ final class GitStatusService: ObservableObject {
                         body: fields.count > 1 ? fields[1] : ""
                     )
                 }
-
+            
             return (tag.isEmpty ? nil : tag, commits)
         }
     }
-
+    
     @discardableResult
     func commit(message: String) async throws -> String {
         try await onGitQueueThrowing {
@@ -648,33 +790,33 @@ final class GitStatusService: ObservableObject {
             guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw GitCommitError.emptyMessage
             }
-
+            
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + ".txt")
-
+            
             do {
                 try message.write(to: tempURL, atomically: true, encoding: .utf8)
             } catch {
                 throw GitCommitError.writeFailed
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
-
+            
             let result = self.gitResult(["commit", "-F", tempURL.path], at: path)
             guard result.exitCode == 0 else {
                 throw GitCommitError.commitFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
             }
-
+            
             self.scheduleRefresh()
             return result.output
         }
     }
-
+    
     func createAnnotatedTag(name: String, message: String) async throws {
         try await onGitQueueThrowing {
             guard let path = self.currentRepoPath else {
                 throw GitTagError.noRepo
             }
-
+            
             let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedName.isEmpty else {
                 throw GitTagError.emptyName
@@ -682,27 +824,27 @@ final class GitStatusService: ObservableObject {
             guard GitStatusService.isValidTagName(trimmedName) else {
                 throw GitTagError.invalidName(trimmedName)
             }
-
+            
             let existing = self.git(["tag", "-l", trimmedName], at: path)
             guard existing.isEmpty else {
                 throw GitTagError.tagExists(trimmedName)
             }
-
+            
             let tempURL = FileManager.default.temporaryDirectory
                 .appendingPathComponent(UUID().uuidString + ".txt")
-
+            
             do {
                 try message.write(to: tempURL, atomically: true, encoding: .utf8)
             } catch {
                 throw GitTagError.writeFailed
             }
             defer { try? FileManager.default.removeItem(at: tempURL) }
-
+            
             let result = self.gitResult(["tag", "-a", trimmedName, "-F", tempURL.path], at: path)
             guard result.exitCode == 0 else {
                 throw GitTagError.tagFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
             }
-
+            
             self.scheduleRefresh()
         }
     }
