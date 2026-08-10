@@ -18,6 +18,7 @@ struct NotchContentView: View {
     @State private var isPulsing = false
     @State private var hoverTask: Task<Void, Never>?
     @State private var pulseTask: Task<Void, Never>?
+    @State private var showSplash = true
     
     private let style: NotchStyle
     private let metrics: ScreenMetrics
@@ -134,13 +135,15 @@ struct NotchContentView: View {
         }
     }
     
-    private var expandedHeight: CGFloat {
-        let base: CGFloat
-        switch style {
-        case .notch: base = max(118, metrics.notchHeight + 108)
-        case .island: base = 118
+    private var baseExpandedHeight: CGFloat {
+            switch style {
+            case .notch: return max(118, metrics.notchHeight + 108)
+            case .island: return 118
+            }
         }
-        return base + collisionSectionHeight + remoteSectionHeight
+
+    private var expandedHeight: CGFloat {
+        baseExpandedHeight + collisionSectionHeight + remoteSectionHeight
     }
     
     private var collapsedCornerRadius: CGFloat {
@@ -225,45 +228,59 @@ struct NotchContentView: View {
     // MARK: - Body
     
     var body: some View {
-        ZStack(alignment: outerAlignment) {
-            Color.clear
-            
-            if !isHidden {
-                capsule
+            if showSplash {
+                ZStack(alignment: outerAlignment) {
+                    Color.clear
+                    SplashView(
+                        isActive: $showSplash,
+                        expandedWidth: expandedWidth,
+                        expandedHeight: baseExpandedHeight,
+                        expandedCornerRadius: expandedCornerRadius
+                    )
                     .padding(.horizontal, horizontalInset)
-                    .transition(.opacity)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
+            } else {
+                ZStack(alignment: outerAlignment) {
+                    Color.clear
+
+                    if !isHidden {
+                        capsule
+                            .padding(.horizontal, horizontalInset)
+                            .transition(.opacity)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
+                .animation(.easeInOut(duration: 0.2), value: isHidden)
+                .onAppear {
+                    pointer.start()
+                    pointer.updateTrackingFrame(trackingFrame)
+                }
+                .onDisappear {
+                    pointer.stop()
+                    hoverTask?.cancel()
+                    pulseTask?.cancel()
+                }
+                .onChange(of: trackingFrame) { _, frame in
+                    pointer.updateTrackingFrame(frame)
+                }
+                .onChange(of: pointer.isInside) { _, inside in
+                    scheduleHoverChange(to: inside)
+                }
+                .onChange(of: isHidden) { _, hidden in
+                    if hidden {
+                        hoverTask?.cancel()
+                        isHoverExpanded = false
+                        isPulsing = false
+                    }
+                }
+                .onChange(of: pulseKey) { oldValue, newValue in
+                    guard !isHidden else { return }
+                    guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
+                    triggerPulse()
+                }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
-        .animation(.easeInOut(duration: 0.2), value: isHidden)
-        .onAppear {
-            pointer.start()
-            pointer.updateTrackingFrame(trackingFrame)
-        }
-        .onDisappear {
-            pointer.stop()
-            hoverTask?.cancel()
-            pulseTask?.cancel()
-        }
-        .onChange(of: trackingFrame) { _, frame in
-            pointer.updateTrackingFrame(frame)
-        }
-        .onChange(of: pointer.isInside) { _, inside in
-            scheduleHoverChange(to: inside)
-        }
-        .onChange(of: isHidden) { _, hidden in
-            if hidden {
-                hoverTask?.cancel()
-                isHoverExpanded = false
-                isPulsing = false
-            }
-        }
-        .onChange(of: pulseKey) { oldValue, newValue in
-            guard !isHidden else { return }
-            guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
-            triggerPulse()
-        }
-    }
     
     private var capsule: some View {
         ZStack {

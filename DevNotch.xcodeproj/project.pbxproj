@@ -6,7 +6,12 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		1118B9CE302A320E007FB91E /* Version.xcconfig in Resources */ = {isa = PBXBuildFile; fileRef = 1118B9CD302A320E007FB91E /* Version.xcconfig */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
+		1118B9CD302A320E007FB91E /* Version.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Version.xcconfig; sourceTree = "<group>"; };
 		1175F0C73022608800F39005 /* DevNotch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DevNotch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -32,6 +37,7 @@
 		1175F0BE3022608800F39005 = {
 			isa = PBXGroup;
 			children = (
+				1118B9CD302A320E007FB91E /* Version.xcconfig */,
 				1175F0C93022608800F39005 /* DevNotch */,
 				1175F0C83022608800F39005 /* Products */,
 			);
@@ -55,6 +61,7 @@
 				1175F0C33022608800F39005 /* Sources */,
 				1175F0C43022608800F39005 /* Frameworks */,
 				1175F0C53022608800F39005 /* Resources */,
+				1118B9A7302A2BBE007FB91E /* ShellScript */,
 			);
 			buildRules = (
 			);
@@ -109,10 +116,32 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1118B9CE302A320E007FB91E /* Version.xcconfig in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		1118B9A7302A2BBE007FB91E /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "GIT_TAG=$(git -C \"${SRCROOT}\" describe --tags --always --abbrev=0 2>/dev/null)\nif [ -z \"$GIT_TAG\" ]; then\n  GIT_TAG=\"0.0.0\"\nfi\nVERSION=$(echo \"$GIT_TAG\" | sed 's/^v//')\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VERSION\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1175F0C33022608800F39005 /* Sources */ = {
@@ -127,6 +156,7 @@
 /* Begin XCBuildConfiguration section */
 		1175F0D03022608900F39005 /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 1118B9CD302A320E007FB91E /* Version.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -190,6 +220,7 @@
 		};
 		1175F0D13022608900F39005 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 1118B9CD302A320E007FB91E /* Version.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
@@ -253,6 +284,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "DevNotch potrzebuje dostępu do Terminala, żeby odczytać status repozytorium git.";
@@ -261,7 +293,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(APP_VERSION)";
 				PRODUCT_BUNDLE_IDENTIFIER = "oblivi0n-arch.DevNotch";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -284,6 +316,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "DevNotch potrzebuje dostępu do Terminala, żeby odczytać status repozytorium git.";
@@ -292,7 +325,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = "$(APP_VERSION)";
 				PRODUCT_BUNDLE_IDENTIFIER = "oblivi0n-arch.DevNotch";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
