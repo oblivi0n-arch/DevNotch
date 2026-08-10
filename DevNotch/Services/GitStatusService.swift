@@ -242,7 +242,7 @@ final class GitStatusService: ObservableObject {
 
             if let firstLine = lines.first {
                 let branchInfo = firstLine.dropFirst(min(3, firstLine.count))
-                result.branch = branchInfo.split(separator: ".").first.map(String.init) ?? String(branchInfo)
+                result.branch = parseBranchName(from: branchInfo)
 
                 let (hasUpstream, ahead, behind) = parseAheadBehind(from: branchInfo)
                 result.hasUpstream = hasUpstream
@@ -315,6 +315,26 @@ final class GitStatusService: ObservableObject {
         } catch {
             return ("", error.localizedDescription, -1)
         }
+    }
+    
+    private func parseBranchName(from branchInfo: Substring) -> String {
+        var name = branchInfo
+
+        if let separator = name.range(of: "...") {
+            name = name[name.startIndex..<separator.lowerBound]
+        } else if let bracket = name.firstIndex(of: "[") {
+            name = name[name.startIndex..<bracket]
+        }
+
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+
+        if trimmed.hasPrefix("No commits yet on ") {
+            return String(trimmed.dropFirst("No commits yet on ".count))
+        }
+        if trimmed == "HEAD (no branch)" {
+            return "detached HEAD"
+        }
+        return trimmed
     }
     
     private func parseAheadBehind(from branchInfo: Substring) -> (hasUpstream: Bool, ahead: Int, behind: Int) {

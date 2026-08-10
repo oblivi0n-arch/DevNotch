@@ -81,6 +81,7 @@ struct OllamaChatView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 140)
+                .disabled(isStreaming)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
