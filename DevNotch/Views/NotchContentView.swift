@@ -135,13 +135,15 @@ struct NotchContentView: View {
         }
     }
     
-    private var expandedHeight: CGFloat {
-        let base: CGFloat
-        switch style {
-        case .notch: base = max(118, metrics.notchHeight + 108)
-        case .island: base = 118
+    private var baseExpandedHeight: CGFloat {
+            switch style {
+            case .notch: return max(118, metrics.notchHeight + 108)
+            case .island: return 118
+            }
         }
-        return base + collisionSectionHeight + remoteSectionHeight
+
+    private var expandedHeight: CGFloat {
+        baseExpandedHeight + collisionSectionHeight + remoteSectionHeight
     }
     
     private var collapsedCornerRadius: CGFloat {
@@ -232,7 +234,7 @@ struct NotchContentView: View {
                     SplashView(
                         isActive: $showSplash,
                         expandedWidth: expandedWidth,
-                        expandedHeight: expandedHeight,
+                        expandedHeight: baseExpandedHeight,
                         expandedCornerRadius: expandedCornerRadius
                     )
                     .padding(.horizontal, horizontalInset)
