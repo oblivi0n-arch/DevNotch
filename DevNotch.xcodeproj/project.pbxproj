@@ -55,6 +55,7 @@
 				1175F0C33022608800F39005 /* Sources */,
 				1175F0C43022608800F39005 /* Frameworks */,
 				1175F0C53022608800F39005 /* Resources */,
+				1118B9A7302A2BBE007FB91E /* ShellScript */,
 			);
 			buildRules = (
 			);
@@ -113,6 +114,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		1118B9A7302A2BBE007FB91E /* ShellScript */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "GIT_TAG=$(git -C \"${SRCROOT}\" describe --tags --always --abbrev=0 2>/dev/null)\nif [ -z \"$GIT_TAG\" ]; then\n  GIT_TAG=\"0.0.0\"\nfi\nVERSION=$(echo \"$GIT_TAG\" | sed 's/^v//')\n/usr/libexec/PlistBuddy -c \"Set :CFBundleShortVersionString $VERSION\" \"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1175F0C33022608800F39005 /* Sources */ = {
@@ -253,6 +275,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "DevNotch potrzebuje dostępu do Terminala, żeby odczytać status repozytorium git.";
@@ -284,6 +307,7 @@
 				CURRENT_PROJECT_VERSION = 1;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "DevNotch potrzebuje dostępu do Terminala, żeby odczytać status repozytorium git.";

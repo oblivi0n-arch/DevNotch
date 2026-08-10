@@ -13,6 +13,10 @@ struct SplashView: View {
     private var collapsedWidth: CGFloat { expandedWidth * 0.55 }
     private var collapsedHeight: CGFloat { expandedHeight * 0.8 }
     private var collapsedCornerRadius: CGFloat { collapsedHeight / 2 }
+    
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0"
+    }
 
     var body: some View {
         RoundedRectangle(
@@ -25,10 +29,16 @@ struct SplashView: View {
             height: isExpanded ? expandedHeight : collapsedHeight
         )
         .overlay(
-            Text("DevNotch")
-                .font(.system(size: 25, weight: .semibold, design: .rounded))
-                .foregroundColor(.white)
-                .opacity(isExpanded ? 1 : 0)
+            VStack(spacing: 2) {
+                Text("DevNotch")
+                    .font(.system(size: 19, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+
+                Text("v\(appVersion)")
+                    .font(.system(size: 11, weight: .regular, design: .rounded))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            .opacity(isExpanded ? 1 : 0)
         )
         .shadow(color: .black.opacity(0.4), radius: 8, y: 4)
         .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
