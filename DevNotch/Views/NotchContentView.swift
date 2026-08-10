@@ -12,18 +12,24 @@ struct NotchContentView: View {
     @ObservedObject private var appModeService: AppModeService
     @ObservedObject private var gitService: GitStatusService
 
-    @State private var isHovered = false
+    @State private var isHoverExpanded = false
     @State private var isPulsing = false
+    @State private var hoverTask: Task<Void, Never>?
     @State private var pulseTask: Task<Void, Never>?
 
     private let notchWidth: CGFloat
     private let notchHeight: CGFloat
 
-    private let hitAreaWidth: CGFloat = 280
     private let expandedWidth: CGFloat = 300
     private let collapsedHeight: CGFloat = 32
     private let collapsedDotOverhang: CGFloat = 28
+
     private let pulseDuration: Duration = .seconds(2)
+    private let hoverOpenDelay: Duration = .milliseconds(120)
+    private let hoverCloseDelay: Duration = .milliseconds(180)
+
+    private let collapsedHoverPadding: CGFloat = 18
+    private let expandedHoverPadding: CGFloat = 14
 
     init(notchWidth: CGFloat, notchHeight: CGFloat, appModeService: AppModeService, gitService: GitStatusService) {
         self.notchWidth = notchWidth
@@ -38,7 +44,15 @@ struct NotchContentView: View {
 
     private var isIdle: Bool { !status.isValidRepo }
 
-    private var isExpanded: Bool { isHovered || isPulsing }
+    private var isExpanded: Bool { isHoverExpanded || isPulsing }
+
+    private var hoverAreaWidth: CGFloat {
+        isExpanded ? expandedWidth + expandedHoverPadding : collapsedWidth + collapsedHoverPadding
+    }
+
+    private var hoverAreaHeight: CGFloat {
+        isExpanded ? expandedHeight + expandedHoverPadding : collapsedHeight + 6
+    }
 
     private var pulseKey: PulseKey {
         PulseKey(
@@ -95,35 +109,62 @@ struct NotchContentView: View {
     var body: some View {
         ZStack(alignment: .top) {
             Color.clear
-                .frame(width: hitAreaWidth, height: expandedHeight)
+                .frame(width: hoverAreaWidth, height: hoverAreaHeight)
                 .contentShape(Rectangle())
-                .onHover { hovering in
-                    isHovered = hovering
-                }
+                .onHover(perform: handleHover)
 
             ZStack {
                 Color.black
 
                 if isExpanded {
                     expandedContent
-                        .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .top)))
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity
+                                    .combined(with: .offset(y: -6))
+                                    .animation(.easeOut(duration: 0.2).delay(0.08)),
+                                removal: .opacity
+                                    .animation(.easeIn(duration: 0.09))
+                            )
+                        )
                 } else {
                     collapsedContent
-                        .transition(.opacity)
+                        .transition(
+                            .asymmetric(
+                                insertion: .opacity.animation(.easeOut(duration: 0.18).delay(0.12)),
+                                removal: .opacity.animation(.easeIn(duration: 0.08))
+                            )
+                        )
                 }
             }
             .frame(
                 width: isExpanded ? expandedWidth : collapsedWidth,
                 height: isExpanded ? expandedHeight : collapsedHeight
             )
-            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 16 : 10))
-            .animation(.spring(response: 0.35, dampingFraction: 0.75), value: isExpanded)
+            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 18 : 10))
+            .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
             .allowsHitTesting(false)
         }
         .frame(width: 320, height: expandedHeight, alignment: .top)
         .onChange(of: pulseKey) { oldValue, newValue in
             guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
             triggerPulse()
+        }
+        .onDisappear {
+            hoverTask?.cancel()
+            pulseTask?.cancel()
+        }
+    }
+
+    private func handleHover(_ hovering: Bool) {
+        hoverTask?.cancel()
+
+        guard hovering != isHoverExpanded else { return }
+
+        hoverTask = Task {
+            try? await Task.sleep(for: hovering ? hoverOpenDelay : hoverCloseDelay)
+            guard !Task.isCancelled else { return }
+            isHoverExpanded = hovering
         }
     }
 
