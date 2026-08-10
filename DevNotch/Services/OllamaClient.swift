@@ -15,7 +15,8 @@ enum OllamaError: LocalizedError {
     case modelNotFound(String)
     case serverError(Int)
     case invalidResponse
-
+    case decodingFailed
+    
     var errorDescription: String? {
         switch self {
         case .connectionFailed:
@@ -26,9 +27,11 @@ enum OllamaError: LocalizedError {
             return "Ollama returned an error (\(code))."
         case .invalidResponse:
             return "Ollama returned an invalid response."
+        case .decodingFailed:
+            return "Ollama returned JSON that does not match the expected shape."
         }
     }
-
+    
     var recoverySuggestion: String? {
         switch self {
         case .connectionFailed:
@@ -36,6 +39,8 @@ enum OllamaError: LocalizedError {
         case .modelNotFound:
             return "Pull it or pick another one in Settings."
         case .serverError, .invalidResponse:
+            return nil
+        case .decodingFailed:
             return nil
         }
     }
@@ -46,11 +51,11 @@ struct OllamaClient {
         let host = UserDefaults.standard.string(forKey: "ollamaHost") ?? OllamaDefaults.host
         return URL(string: "\(host)/api/chat") ?? URL(string: "\(OllamaDefaults.host)/api/chat")!
     }
-
+    
     var model: String {
         UserDefaults.standard.string(forKey: "ollamaModel") ?? OllamaDefaults.model
     }
-
+    
     func streamChat(messages: [OllamaMessage]) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
@@ -58,7 +63,7 @@ struct OllamaClient {
                     var request = URLRequest(url: url)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
+                    
                     let body: [String: Any] = [
                         "model": model,
                         "messages": messages.map { ["role": $0.role, "content": $0.content] },
@@ -66,23 +71,23 @@ struct OllamaClient {
                         "options": ["temperature": 0.2]
                     ]
                     request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
+                    
                     let (bytes, response) = try await URLSession.shared.bytes(for: request)
-
+                    
                     guard let httpResponse = response as? HTTPURLResponse else {
                         throw OllamaError.connectionFailed
                     }
                     guard httpResponse.statusCode == 200 else {
                         throw error(forStatusCode: httpResponse.statusCode)
                     }
-
+                    
                     for try await line in bytes.lines {
                         try Task.checkCancellation()
                         guard let data = line.data(using: .utf8),
                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                               let message = json["message"] as? [String: Any],
                               let content = message["content"] as? String else { continue }
-
+                        
                         continuation.yield(content)
                     }
                     continuation.finish()
@@ -94,43 +99,46 @@ struct OllamaClient {
                     continuation.finish(throwing: OllamaError.connectionFailed)
                 }
             }
-
+            
             continuation.onTermination = { _ in
                 task.cancel()
             }
         }
     }
-
-    func complete(messages: [OllamaMessage], think: Bool = false) async throws -> String {
+    
+    func complete(messages: [OllamaMessage], format: [String: Any]? = nil, think: Bool = false) async throws -> String {
         do {
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-
-            let body: [String: Any] = [
+            
+            var body: [String: Any] = [
                 "model": model,
                 "messages": messages.map { ["role": $0.role, "content": $0.content] },
                 "stream": false,
                 "think": think,
                 "options": ["temperature": 0.2]
             ]
+            if let format {
+                body["format"] = format
+            }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-
+            
             let (data, response) = try await URLSession.shared.data(for: request)
-
+            
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw OllamaError.connectionFailed
             }
             guard httpResponse.statusCode == 200 else {
                 throw error(forStatusCode: httpResponse.statusCode)
             }
-
+            
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let message = json["message"] as? [String: Any],
                   let content = message["content"] as? String else {
                 throw OllamaError.invalidResponse
             }
-
+            
             return content
         } catch let error as OllamaError {
             throw error
@@ -138,7 +146,24 @@ struct OllamaClient {
             throw OllamaError.connectionFailed
         }
     }
-
+    
+    func complete<T: Decodable>(
+        _ type: T.Type,
+        messages: [OllamaMessage],
+        schema: [String: Any]
+    ) async throws -> T {
+        let raw = try await complete(messages: messages, format: schema)
+        
+        guard let data = raw.data(using: .utf8) else {
+            throw OllamaError.decodingFailed
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw OllamaError.decodingFailed
+        }
+    }
+    
     private func error(forStatusCode code: Int) -> OllamaError {
         switch code {
         case 404:

@@ -7,6 +7,12 @@ private enum ChatMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private struct PreparedTag {
+    let name: String
+    let message: String
+}
+
+@MainActor
 struct OllamaChatView: View {
     @ObservedObject var gitService: GitStatusService
 
@@ -26,16 +32,12 @@ struct OllamaChatView: View {
     @State private var actionedMessageIds: Set<UUID> = []
     @State private var editingMessageId: UUID?
     @State private var editDraft: String = ""
-    @State private var autoRetryCount = 0
     @State private var isPerformingAction = false
+    @State private var preparedTags: [UUID: PreparedTag] = [:]
 
     @FocusState private var isInputFocused: Bool
 
     private let client = OllamaClient()
-    private let maxAutoRetries = 2
-    private static let allowedCommitTypes = [
-        "feat", "fix", "docs", "style", "refactor", "perf", "test", "chore", "build", "ci", "revert"
-    ]
 
     private var messages: [ChatMessage] {
         get { mode == .commit ? commitMessages : tagMessages }
@@ -147,13 +149,6 @@ struct OllamaChatView: View {
                                                         .offset(x: 10, y: -10)
                                                     }
                                                 }
-
-                                            if message.role == "assistant" && isStreaming && message.id == messages.last?.id {
-                                                Text(counterLabel(for: message.content))
-                                                    .font(.system(size: 10))
-                                                    .foregroundColor(.secondary)
-                                                    .padding(.horizontal, 4)
-                                            }
                                         }
                                     }
                                 }
@@ -311,6 +306,7 @@ struct OllamaChatView: View {
         generateResponse()
     }
 
+    @MainActor
     private func generateResponse() {
         lastError = nil
         withAnimation(.easeOut(duration: 0.2)) {
@@ -319,158 +315,92 @@ struct OllamaChatView: View {
         isStreaming = true
 
         let systemPrompt = mode == .commit ? commitSystemPrompt : tagSystemPrompt
-
         var history: [OllamaMessage] = [OllamaMessage(role: "system", content: systemPrompt)]
         history += messages.dropLast()
-            .filter { $0.role != "system" }
+            .filter { $0.role == "user" || $0.role == "assistant" }
             .map { OllamaMessage(role: $0.role, content: $0.content) }
+
+        let currentMode = mode
+        let baseTag = tagLastTag
 
         Task {
             do {
-                for try await chunk in client.streamChat(messages: history) {
-                    await MainActor.run {
-                        if let lastIndex = messages.indices.last {
-                            messages[lastIndex].content += chunk
-                        }
-                    }
+                let rendered: String
+                var prepared: PreparedTag?
+
+                switch currentMode {
+                case .commit:
+                    let draft = try await client.complete(
+                        CommitDraft.self,
+                        messages: history,
+                        schema: CommitDraft.jsonSchema
+                    )
+                    rendered = draft.renderedMessage
+
+                case .tag:
+                    let draft = try await client.complete(
+                        TagDraft.self,
+                        messages: history,
+                        schema: TagDraft.jsonSchema
+                    )
+                    let version = SemanticVersion.next(after: baseTag, bump: draft.bump)
+                    prepared = PreparedTag(name: version.tagName, message: draft.changelog)
+                    rendered = "\(version.tagName)\n\n\(draft.changelog)"
                 }
-                await MainActor.run {
-                    handleGenerationFinished()
-                }
-            } catch {
-                await MainActor.run {
-                    messages.removeLast()
-                    lastError = (error as? OllamaError) ?? .connectionFailed
+
+                guard let index = messages.indices.last else {
                     isStreaming = false
-                    autoRetryCount = 0
+                    return
                 }
+                messages[index].content = rendered
+                if let prepared {
+                    preparedTags[messages[index].id] = prepared
+                }
+                isStreaming = false
+
+            } catch {
+                messages.removeLast()
+                lastError = (error as? OllamaError) ?? .connectionFailed
+                isStreaming = false
             }
         }
     }
-
-    private func handleGenerationFinished() {
-        guard let last = messages.last, last.role == "assistant", !last.content.isEmpty else {
-            isStreaming = false
-            autoRetryCount = 0
-            return
-        }
-
-        if isValidOutput(last.content) {
-            isStreaming = false
-            autoRetryCount = 0
-            return
-        }
-
-        guard autoRetryCount < maxAutoRetries else {
-            isStreaming = false
-            autoRetryCount = 0
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "⚠️ Response format looks off after \(maxAutoRetries) retries — review it before using it"))
-            }
-            return
-        }
-
-        autoRetryCount += 1
-        if let lastAssistantIndex = messages.lastIndex(where: { $0.role == "assistant" }) {
-            messages.removeSubrange(lastAssistantIndex...)
-        }
-        generateResponse()
-    }
-
-    private func isValidOutput(_ content: String) -> Bool {
-        switch mode {
-        case .commit: return isValidCommitOutput(content)
-        case .tag: return isValidTagOutput(content)
-        }
-    }
-
-    private func isValidCommitOutput(_ content: String) -> Bool {
-        guard !content.contains("```") else { return false }
-        guard let firstLine = content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false).first else {
-            return false
-        }
-        let line = firstLine.trimmingCharacters(in: .whitespaces)
-        guard let colonIndex = line.firstIndex(of: ":") else { return false }
-
-        let head = String(line[line.startIndex..<colonIndex])
-        let type = head.contains("(") ? String(head[..<head.firstIndex(of: "(")!]) : head
-
-        guard Self.allowedCommitTypes.contains(type) else { return false }
-        guard line.count <= 100 else { return false }
-        return true
-    }
-
-    private func isValidTagOutput(_ content: String) -> Bool {
-        guard !content.contains("```") else { return false }
-        return parseTagOutput(content) != nil
-    }
-
+    
     private var commitSystemPrompt: String {
         """
         ROLE
-        You are a git commit message generator for a single developer's private project. You classify a diff into exactly one Conventional Commits type and write a concise message. The rules below are the highest priority — follow them even when the example seems to suggest otherwise.
+        You classify a git diff into exactly one Conventional Commits type and write a concise message. Your answer is returned as JSON matching a fixed schema — never write prose outside the fields.
 
-        RULES (apply in this order)
+        FIELD RULES
+        - type: exactly one allowed value; pick the single best fit.
+        - scope: one lowercase word naming the affected area, or "" if unclear.
+        - summary: imperative mood, lowercase, no trailing period, max 60 characters.
+        - body: 1-3 plain-prose sentences on what changed and why. Never restate the diff.
+        - breakingChange: "" unless the diff changes a contract something else depends on directly — a function signature, a persisted data format, a config key or file, a CLI argument, an exposed API. An internal-only change is never breaking on its own, even if behavior changes meaningfully.
 
-        1. Allowed types (pick exactly one): feat, fix, docs, style, refactor, perf, test, chore, build, ci, revert.
+        TYPE DEFINITIONS
+        - feat: adds or changes a capability observable at runtime — a new trigger, a new condition under which something starts/stops, a new state, a new user-facing behavior. Applies even when implemented by editing an existing function.
+        - fix: corrects behavior that was wrong relative to intent — a bug, crash, wrong output, wrong state, incorrect condition.
+        - perf: same external behavior, lower cost — CPU, memory, network calls, disk I/O, polling frequency, algorithmic complexity.
+        - refactor: restructures code with NO change to external behavior and NO resource intent.
+        - style: zero-semantic formatting only — whitespace, indentation, import ordering, linter fixes.
+        - docs: changes confined to documentation or comments.
+        - test: changes confined to test code, fixtures, or mocks.
+        - chore: repository maintenance with no user-facing or architectural significance.
+        - build: changes to the build/packaging system or its dependencies.
+        - ci: changes to CI/CD pipeline configuration.
+        - revert: undoes a previous commit.
 
-        2. Type definitions:
-           - feat: adds or changes a capability observable at runtime — a new trigger, a new condition under which something starts/stops, a new state, a new user-facing behavior. Applies even when implemented by editing an existing function rather than adding a new symbol.
-           - fix: corrects behavior that was wrong relative to what the code was supposed to do — a bug, crash, wrong output, wrong state, incorrect condition.
-           - perf: keeps external behavior the same but reduces cost — CPU, memory, network calls, disk I/O, polling frequency, algorithmic complexity. Same result, cheaper.
-           - refactor: restructures code with NO change to external behavior and NO resource/performance intent.
-           - style: zero-semantic formatting only — whitespace, indentation, import ordering, linter fixes.
-           - docs: changes confined to documentation/comments/README with no code semantics touched.
-           - test: changes confined to test code, fixtures, or mocks.
-           - chore: repository maintenance with no user-facing or architectural significance.
-           - build: changes to the build/packaging system or its dependencies.
-           - ci: changes to CI/CD pipeline configuration.
-           - revert: undoes a previous commit.
+        DISAMBIGUATION
+        - feat vs fix: working-as-designed + new capability → feat. Behavior diverged from intent → fix.
+        - feat vs refactor: diff changes when/how/whether something runs → feat, never refactor, no matter how much code was touched.
+        - perf vs refactor: motivation is reducing resource usage or call frequency → perf, never refactor.
+        - perf vs fix: prior behavior correct but wasteful → perf. Prior behavior incorrect → fix.
+        - chore vs build vs ci: chore = housekeeping unrelated to compiling/pipelines; build = compilation/packaging/dependencies; ci = pipeline config.
+        - style vs refactor: style is provably zero-semantic; anything reorganizing logic is refactor.
+        - Mixed diffs: classify by primary intent, not by which files were touched.
 
-        3. Disambiguation (use when two types both seem plausible):
-           - feat vs fix: working-as-designed + new capability → feat. Behavior diverged from intent → fix.
-           - feat vs refactor: diff changes when/how/whether something runs → feat, never refactor, no matter how much existing code was touched.
-           - perf vs refactor: diff's motivation is reducing resource usage or call frequency → perf, never refactor.
-           - perf vs fix: prior behavior correct but wasteful/slow → perf. Prior behavior incorrect or crashing → fix.
-           - chore vs build vs ci: chore = general housekeeping unrelated to compiling/pipelines; build = compilation/packaging/dependencies; ci = pipeline automation config.
-           - style vs refactor: style is provably zero-semantic; anything reorganizing logic is refactor.
-           - docs vs chore: docs = documentation content itself; chore = non-documentation maintenance.
-           - Mixed diffs: classify by the primary intent, not by which files were touched.
-
-        4. BREAKING CHANGE footer: only add it when the diff changes a contract something else depends on directly — a function/method signature, a persisted data format, a config key or file, a CLI argument, an exposed API/endpoint. An internal-only change is never breaking on its own, even if behavior changes meaningfully.
-
-        5. Style constraints: imperative mood, lowercase after the colon, max 72 chars, no trailing period, no markdown code fences. <scope> optional — omit parentheses if unclear. Body is 1-3 plain-prose sentences.
-
-        OUTPUT FORMAT
-        Produce exactly two parts and nothing else — no preamble, no restated diff, no explanation of your reasoning:
-
-        <type>(<scope>): <summary>
-
-        <body>
-
-        ---
-        EXAMPLE (format reference only — do not reuse its content)
-
-        Diff:
-        diff --git a/Sources/Utils/Formatter.swift b/Sources/Utils/Formatter.swift
-        index 83f3b19..4c7a2ee 100644
-        --- a/Sources/Utils/Formatter.swift
-        +++ b/Sources/Utils/Formatter.swift
-        @@ -12,6 +12,9 @@ struct Formatter {
-        +    static func trimmed(_ text: String) -> String {
-        +        text.trimmingCharacters(in: .whitespacesAndNewlines)
-        +    }
-
-        Correct output for that diff:
-        feat(utils): add trimmed string formatting helper
-
-        Adds a helper that strips leading/trailing whitespace and newlines from a string, used by the commit preview to avoid stray blank lines.
-
-        ---
-        TASK
-        Classify and write a commit message for the diff below. Output only the two parts described in OUTPUT FORMAT.
-
-        Diff:
+        DIFF
         \(stagedDiff)
         """
     }
@@ -479,57 +409,25 @@ struct OllamaChatView: View {
         let baseVersion = tagLastTag ?? "none (this is the first release)"
         return """
         ROLE
-        You are a release-notes and version generator for annotated git tags, working from the commit list since the last tag. The rules below are the highest priority — follow them even when the example seems to suggest otherwise.
+        You turn a list of commit subjects into a release changelog. Your answer is returned as JSON matching a fixed schema — never write prose outside the fields.
 
-        RULES (apply in this order)
+        The version number is computed by the application, not by you. You only decide how large the bump is.
 
-        1. Version bump logic (base version: \(baseVersion)):
-           - MAJOR if any commit has a "BREAKING CHANGE:" footer or "!" after type/scope (e.g. "feat!:") — UNLESS base version is 0.x.y (pre-1.0), in which case this bumps MINOR instead (SemVer initial-development convention).
-           - Else MINOR if at least one commit has type "feat".
-           - Else PATCH if at least one commit has type "fix" or "perf".
-           - Else PATCH by default if there are any commits at all (only refactor/test/chore/build/ci/style/docs/revert) — still bump, and note in the body that this release has no user-facing changes.
-           - Multiple breaking changes in the same range still produce a single bump, never multiple.
-           - No previous tag → start at v0.1.0, unless commits explicitly indicate a stable v1.0.0 release.
+        FIELD RULES
+        - bump:
+          - "major" if any commit carries a "BREAKING CHANGE:" footer or a "!" after the type/scope (e.g. "feat!:").
+          - otherwise "minor" if at least one commit has type "feat".
+          - otherwise "patch".
+          Multiple breaking changes in the same range still produce a single bump.
+        - added: one entry per "feat" commit.
+        - fixed: one entry per "fix" commit.
+        - performance: one entry per "perf" commit.
+        - changed: one entry per refactor/style/docs/build/ci/chore commit.
+        - other: one entry per revert or test-only commit.
 
-        2. Changelog body logic:
-           - Group under headings, only if they have at least one entry: "### Added" (feat), "### Fixed" (fix), "### Performance" (perf), "### Changed" (refactor/style/docs/build/ci/chore), "### Other" (revert, test-only).
-           - One "- " bullet per commit, plain language, imperative. Keep bullets in commit order (oldest first) within each heading. Never merge two commits into one bullet.
-           - If only refactor/test/chore/build/ci/style/docs commits exist, still produce a body — never an empty one.
+        Entries are plain language and imperative, in commit order (oldest first). Never merge two commits into one entry. If a commit subject is cryptic, rewrite it so a user understands it. Leave an array empty when no commit matches it.
 
-        3. Style constraints: no markdown code fences, no restating the input commit list, no explanation of your reasoning.
-
-        OUTPUT FORMAT
-        Produce exactly two parts and nothing else — no preamble:
-
-        v<major>.<minor>.<patch>
-
-        <changelog body>
-
-        ---
-        EXAMPLE (format reference only — do not reuse its content)
-
-        Commits since v1.2.0:
-        feat(chat): add regenerate button
-        fix(git): handle missing upstream branch
-        docs(readme): clarify setup steps
-
-        Correct output for that commit list:
-        v1.3.0
-
-        ### Added
-        - Regenerate button to reroll the last generated response
-
-        ### Fixed
-        - Missing upstream branch no longer crashes status refresh
-
-        ### Changed
-        - Clarified setup steps in the README
-
-        ---
-        TASK
-        Generate the version and changelog for the commits below. Output only the two parts described in OUTPUT FORMAT.
-
-        Commits since \(baseVersion):
+        COMMITS SINCE \(baseVersion)
         \(tagCommitLog)
         """
     }
@@ -620,9 +518,9 @@ struct OllamaChatView: View {
 
     @MainActor
     private func performCreateTag(for message: ChatMessage) {
-        guard let parsed = parseTagOutput(message.content) else {
+        guard let prepared = preparedTags[message.id] else {
             withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "❌ Could not parse a tag name from the response"))
+                messages.append(ChatMessage(role: "system", content: "❌ No version prepared for this response"))
             }
             return
         }
@@ -633,10 +531,10 @@ struct OllamaChatView: View {
         Task {
             defer { isPerformingAction = false }
             do {
-                try await gitService.createAnnotatedTag(name: parsed.name, message: parsed.message)
+                try await gitService.createAnnotatedTag(name: prepared.name, message: prepared.message)
                 actionedMessageIds.insert(message.id)
                 withAnimation(.easeOut(duration: 0.2)) {
-                    messages.append(ChatMessage(role: "system", content: "✅ Created tag \(parsed.name)"))
+                    messages.append(ChatMessage(role: "system", content: "✅ Created tag \(prepared.name)"))
                 }
             } catch {
                 let reason = (error as? GitTagError)?.errorDescription ?? error.localizedDescription
@@ -646,19 +544,7 @@ struct OllamaChatView: View {
             }
         }
     }
-
-    private func parseTagOutput(_ content: String) -> (name: String, message: String)? {
-        let parts = content.split(separator: "\n", maxSplits: 1, omittingEmptySubsequences: false)
-        guard let firstLine = parts.first else { return nil }
-
-        let name = firstLine.trimmingCharacters(in: .whitespaces)
-        guard GitStatusService.isValidTagName(name) else { return nil }
-
-        let rest = parts.count > 1 ? String(parts[1]) : ""
-        let message = rest.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (name, message.isEmpty ? name : message)
-    }
-
+    
     @ViewBuilder
     private func systemFeedbackView(_ message: ChatMessage) -> some View {
         let isError = message.content.hasPrefix("❌")
@@ -681,12 +567,5 @@ struct OllamaChatView: View {
         withAnimation(.easeOut(duration: 0.15)) {
             proxy.scrollTo(lastId, anchor: .bottom)
         }
-    }
-
-    private func counterLabel(for text: String) -> String {
-        let chars = text.count
-        // Rough heuristic: ~4 characters per token for English text.
-        let approxTokens = max(1, chars / 4)
-        return "\(chars) chars · ~\(approxTokens) tokens"
     }
 }
