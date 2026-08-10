@@ -17,8 +17,8 @@ struct NotchContentView: View {
     @State private var hoverTask: Task<Void, Never>?
     @State private var pulseTask: Task<Void, Never>?
 
-    private let notchWidth: CGFloat
-    private let notchHeight: CGFloat
+    private let style: NotchStyle
+    private let metrics: ScreenMetrics
 
     private let expandedWidth: CGFloat = 300
     private let collapsedHeight: CGFloat = 32
@@ -31,9 +31,9 @@ struct NotchContentView: View {
     private let collapsedHoverPadding: CGFloat = 18
     private let expandedHoverPadding: CGFloat = 14
 
-    init(notchWidth: CGFloat, notchHeight: CGFloat, appModeService: AppModeService, gitService: GitStatusService) {
-        self.notchWidth = notchWidth
-        self.notchHeight = notchHeight
+    init(style: NotchStyle, metrics: ScreenMetrics, appModeService: AppModeService, gitService: GitStatusService) {
+        self.style = style
+        self.metrics = metrics
         self.appModeService = appModeService
         self.gitService = gitService
     }
@@ -46,14 +46,6 @@ struct NotchContentView: View {
 
     private var isExpanded: Bool { isHoverExpanded || isPulsing }
 
-    private var hoverAreaWidth: CGFloat {
-        isExpanded ? expandedWidth + expandedHoverPadding : collapsedWidth + collapsedHoverPadding
-    }
-
-    private var hoverAreaHeight: CGFloat {
-        isExpanded ? expandedHeight + expandedHoverPadding : collapsedHeight + 6
-    }
-
     private var pulseKey: PulseKey {
         PulseKey(
             branch: status.branch,
@@ -64,16 +56,48 @@ struct NotchContentView: View {
         )
     }
 
+    // MARK: - Style geometry
+
     private var collapsedWidth: CGFloat {
-        if isIdle {
-            return notchWidth > 0 ? notchWidth : 40
+        switch style {
+        case .notch:
+            let base = metrics.notchWidth > 0 ? metrics.notchWidth : 44
+            return isIdle ? base : base + collapsedDotOverhang
+        case .island:
+            return isIdle ? 46 : 78
         }
-        return notchWidth > 0 ? notchWidth + collapsedDotOverhang : 60
     }
 
     private var expandedHeight: CGFloat {
-        max(118, notchHeight + 100)
+        switch style {
+        case .notch: return max(118, metrics.notchHeight + 100)
+        case .island: return 118
+        }
     }
+
+    private var collapsedCornerRadius: CGFloat {
+        style == .island ? collapsedHeight / 2 : 10
+    }
+
+    private var expandedCornerRadius: CGFloat { 18 }
+
+    private var contentTopPadding: CGFloat {
+        style == .island ? 12 : metrics.notchHeight
+    }
+
+    private var shadowRadius: CGFloat {
+        style == .island ? 14 : 0
+    }
+
+    private var hoverAreaWidth: CGFloat {
+        isExpanded ? expandedWidth + expandedHoverPadding : collapsedWidth + collapsedHoverPadding
+    }
+
+    private var hoverAreaHeight: CGFloat {
+        isExpanded ? expandedHeight + expandedHoverPadding : collapsedHeight + 6
+    }
+
+    // MARK: - Colors
 
     private var workingTreeColor: Color {
         if status.conflictedCount > 0 || status.operation != .none { return .red }
@@ -141,11 +165,12 @@ struct NotchContentView: View {
                 width: isExpanded ? expandedWidth : collapsedWidth,
                 height: isExpanded ? expandedHeight : collapsedHeight
             )
-            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? 18 : 10))
+            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius))
+            .shadow(color: .black.opacity(shadowRadius > 0 ? 0.35 : 0), radius: shadowRadius, y: 4)
             .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
             .allowsHitTesting(false)
         }
-        .frame(width: 320, height: expandedHeight, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: pulseKey) { oldValue, newValue in
             guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
             triggerPulse()
@@ -186,14 +211,14 @@ struct NotchContentView: View {
                 Circle()
                     .fill(workingTreeColor)
                     .frame(width: 6, height: 6)
-                    .padding(.leading, 8)
+                    .padding(.leading, style == .island ? 12 : 8)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
 
                 if status.hasUpstream {
                     Circle()
                         .fill(remoteStatusColor)
                         .frame(width: 6, height: 6)
-                        .padding(.trailing, 8)
+                        .padding(.trailing, style == .island ? 12 : 8)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
                 }
             }
@@ -214,7 +239,7 @@ struct NotchContentView: View {
                 Text("No repo detected in active Terminal / Xcode")
                     .font(.system(size: 12))
                     .foregroundStyle(.gray)
-                    .padding(.top, notchHeight)
+                    .padding(.top, contentTopPadding)
                 Spacer(minLength: 0)
             }
         }
@@ -250,7 +275,7 @@ struct NotchContentView: View {
                 }
             }
         }
-        .padding(.top, notchHeight)
+        .padding(.top, contentTopPadding)
     }
 
     @ViewBuilder
