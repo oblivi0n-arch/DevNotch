@@ -125,6 +125,8 @@ final class GitStatusService: ObservableObject {
     private var fetchTimer: DispatchSourceTimer?
     private let fetchInterval: TimeInterval = 180
     private let fetchTimeout: TimeInterval = 20
+    private let remoteBranchMaxAge: TimeInterval = 14 * 24 * 60 * 60
+    private let remoteBranchLimit = 10
 
     private var didStart = false
 
@@ -328,6 +330,7 @@ final class GitStatusService: ObservableObject {
             result.modifiedCount = counts.modified
             result.untrackedCount = counts.untracked
             result.conflictedCount = counts.conflicted
+            result.remoteBranches = self.readRemoteBranches(at: path, currentBranch: result.branch)
 
             let operation = self.detectOperation(at: path)
             result.operation = operation.kind
@@ -410,6 +413,54 @@ final class GitStatusService: ObservableObject {
 
         return (.none, "")
     }
+    
+    private func shortBranchName(_ ref: String) -> String {
+            guard let slash = ref.firstIndex(of: "/") else { return ref }
+            return String(ref[ref.index(after: slash)...])
+        }
+
+        private func readRemoteBranches(at path: String, currentBranch: String) -> [RemoteBranchInfo] {
+            let separator = "\u{1f}"
+            let format = [
+                "%(refname:short)",
+                "%(authorname)",
+                "%(committerdate:relative)",
+                "%(committerdate:unix)"
+            ].joined(separator: separator)
+
+            let raw = git([
+                "for-each-ref",
+                "--sort=-committerdate",
+                "--format=\(format)",
+                "refs/remotes"
+            ], at: path)
+
+            guard !raw.isEmpty else { return [] }
+
+            let cutoff = Date().addingTimeInterval(-remoteBranchMaxAge)
+
+            let branches = raw.split(separator: "\n").compactMap { line -> RemoteBranchInfo? in
+                let fields = line.components(separatedBy: separator)
+                guard fields.count == 4 else { return nil }
+
+                let name = fields[0]
+                guard !name.hasSuffix("/HEAD") else { return nil }
+                guard shortBranchName(name) != currentBranch else { return nil }
+
+                guard let unix = TimeInterval(fields[3]) else { return nil }
+                let committedAt = Date(timeIntervalSince1970: unix)
+                guard committedAt > cutoff else { return nil }
+
+                return RemoteBranchInfo(
+                    name: name,
+                    author: fields[1],
+                    relativeDate: fields[2],
+                    committedAt: committedAt
+                )
+            }
+
+            return Array(branches.prefix(remoteBranchLimit))
+        }
 
     // MARK: - Remote refresh
 
