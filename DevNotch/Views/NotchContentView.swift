@@ -17,6 +17,7 @@ struct NotchContentView: View {
     @State private var isPulsing = false
     @State private var hoverTask: Task<Void, Never>?
     @State private var pulseTask: Task<Void, Never>?
+    @State private var showSplash = true
 
     private let style: NotchStyle
     private let metrics: ScreenMetrics
@@ -188,43 +189,57 @@ struct NotchContentView: View {
     // MARK: - Body
 
     var body: some View {
-        ZStack(alignment: outerAlignment) {
-            Color.clear
-
-            if !isHidden {
-                capsule
-                    .padding(.horizontal, horizontalInset)
-                    .transition(.opacity)
+        if showSplash {
+            ZStack(alignment: outerAlignment) {
+                Color.clear
+                SplashView(
+                    isActive: $showSplash,
+                    expandedWidth: expandedWidth,
+                    expandedHeight: expandedHeight,
+                    expandedCornerRadius: expandedCornerRadius
+                )
+                .padding(.horizontal, horizontalInset)
             }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
-        .animation(.easeInOut(duration: 0.2), value: isHidden)
-        .onAppear {
-            pointer.start()
-            pointer.updateTrackingFrame(trackingFrame)
-        }
-        .onDisappear {
-            pointer.stop()
-            hoverTask?.cancel()
-            pulseTask?.cancel()
-        }
-        .onChange(of: trackingFrame) { _, frame in
-            pointer.updateTrackingFrame(frame)
-        }
-        .onChange(of: pointer.isInside) { _, inside in
-            scheduleHoverChange(to: inside)
-        }
-        .onChange(of: isHidden) { _, hidden in
-            if hidden {
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
+        } else {
+            ZStack(alignment: outerAlignment) {
+                Color.clear
+                
+                if !isHidden {
+                    capsule
+                        .padding(.horizontal, horizontalInset)
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: outerAlignment)
+            .animation(.easeInOut(duration: 0.2), value: isHidden)
+            .onAppear {
+                pointer.start()
+                pointer.updateTrackingFrame(trackingFrame)
+            }
+            .onDisappear {
+                pointer.stop()
                 hoverTask?.cancel()
-                isHoverExpanded = false
-                isPulsing = false
+                pulseTask?.cancel()
             }
-        }
-        .onChange(of: pulseKey) { oldValue, newValue in
-            guard !isHidden else { return }
-            guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
-            triggerPulse()
+            .onChange(of: trackingFrame) { _, frame in
+                pointer.updateTrackingFrame(frame)
+            }
+            .onChange(of: pointer.isInside) { _, inside in
+                scheduleHoverChange(to: inside)
+            }
+            .onChange(of: isHidden) { _, hidden in
+                if hidden {
+                    hoverTask?.cancel()
+                    isHoverExpanded = false
+                    isPulsing = false
+                }
+            }
+            .onChange(of: pulseKey) { oldValue, newValue in
+                guard !isHidden else { return }
+                guard !oldValue.branch.isEmpty || !newValue.branch.isEmpty else { return }
+                triggerPulse()
+            }
         }
     }
 
