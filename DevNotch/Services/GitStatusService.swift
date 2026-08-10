@@ -609,19 +609,33 @@ final class GitStatusService: ObservableObject {
         }
     }
 
-    func commitsSinceLastTag() async -> (lastTag: String?, log: String) {
+    func commitsSinceLastTag() async -> (lastTag: String?, commits: [ParsedCommit]) {
         await onGitQueue {
-            guard let path = self.currentRepoPath else { return (nil, "") }
+            guard let path = self.currentRepoPath else { return (nil, []) }
 
             let tag = self.git(["describe", "--tags", "--abbrev=0"], at: path)
 
-            var logArguments = ["log", "--pretty=format:%s"]
+            // %x1f separates subject from body, %x1e separates records.
+            var logArguments = ["log", "--reverse", "--pretty=format:%s%x1f%b%x1e"]
             if !tag.isEmpty {
                 logArguments.append("\(tag)..HEAD")
             }
-            let log = self.git(logArguments, at: path)
 
-            return (tag.isEmpty ? nil : tag, log)
+            let raw = self.git(logArguments, at: path)
+
+            let commits = raw
+                .components(separatedBy: "\u{1e}")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .map { record -> ParsedCommit in
+                    let fields = record.components(separatedBy: "\u{1f}")
+                    return ParsedCommit.parse(
+                        subject: fields.first ?? "",
+                        body: fields.count > 1 ? fields[1] : ""
+                    )
+                }
+
+            return (tag.isEmpty ? nil : tag, commits)
         }
     }
 

@@ -12,11 +12,6 @@ private struct Feedback {
     let isError: Bool
 }
 
-private struct ChangelogSection {
-    let title: String
-    let entries: [String]
-}
-
 @MainActor
 struct OllamaChatView: View {
     @ObservedObject var gitService: GitStatusService
@@ -25,12 +20,12 @@ struct OllamaChatView: View {
     @State private var note: String = ""
 
     @State private var commitDraft: CommitDraft?
-    @State private var tagDraft: TagDraft?
-    @State private var bumpOverride: TagDraft.Bump?
+    @State private var releaseNotes: ReleaseNotes?
+    @State private var bumpOverride: VersionBump?
 
     @State private var stagedDiff: String = ""
     @State private var tagLastTag: String?
-    @State private var tagCommitLog: String = ""
+    @State private var tagCommits: [ParsedCommit] = []
 
     @State private var isGenerating = false
     @State private var isPerformingAction = false
@@ -52,7 +47,7 @@ struct OllamaChatView: View {
     private var contextIsEmpty: Bool {
         switch mode {
         case .commit: return stagedDiff.isEmpty
-        case .tag: return tagCommitLog.isEmpty
+        case .tag: return tagCommits.isEmpty
         }
     }
 
@@ -61,13 +56,11 @@ struct OllamaChatView: View {
         return stagedDiff.components(separatedBy: "diff --git ").count - 1
     }
 
-    private var commitCount: Int {
-        guard !tagCommitLog.isEmpty else { return 0 }
-        return tagCommitLog.split(separator: "\n", omittingEmptySubsequences: true).count
-    }
+    private var commitCount: Int { tagCommits.count }
 
-    private var effectiveBump: TagDraft.Bump? {
-        bumpOverride ?? tagDraft?.bump
+    private var effectiveBump: VersionBump? {
+        guard !tagCommits.isEmpty else { return nil }
+        return bumpOverride ?? ReleaseNotes.bump(for: tagCommits)
     }
 
     private var nextVersion: SemanticVersion? {
@@ -75,19 +68,19 @@ struct OllamaChatView: View {
         return version(for: effectiveBump)
     }
 
-    private func version(for bump: TagDraft.Bump) -> SemanticVersion {
+    private func version(for bump: VersionBump) -> SemanticVersion {
         SemanticVersion.next(after: tagLastTag, bump: bump)
     }
 
-    private func suggestedBump(from modelBump: TagDraft.Bump) -> TagDraft.Bump {
-        guard modelBump == .major else { return modelBump }
+    private func suggestedBump(from computed: VersionBump) -> VersionBump {
+        guard computed == .major else { return computed }
 
         let currentMajor = tagLastTag.flatMap(SemanticVersion.init(tag:))?.major ?? 0
         return currentMajor == 0 ? .minor : .major
     }
 
     private var hasDraft: Bool {
-        mode == .commit ? commitDraft != nil : tagDraft != nil
+        mode == .commit ? commitDraft != nil : releaseNotes != nil
     }
 
     private var headline: String {
@@ -282,8 +275,8 @@ struct OllamaChatView: View {
             errorState(lastError)
         } else if mode == .commit, let commitDraft {
             commitCard(commitDraft)
-        } else if mode == .tag, let tagDraft {
-            tagCard(tagDraft)
+        } else if mode == .tag, let releaseNotes {
+            tagCard(releaseNotes)
         } else {
             idleState
         }
@@ -412,7 +405,7 @@ struct OllamaChatView: View {
         .padding(14)
     }
 
-    private func tagCard(_ draft: TagDraft) -> some View {
+    private func tagCard(_ notes: ReleaseNotes) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text(tagLastTag ?? "start")
@@ -428,7 +421,7 @@ struct OllamaChatView: View {
             }
 
             HStack(spacing: 6) {
-                ForEach(TagDraft.Bump.allCases, id: \.self) { bump in
+                ForEach(VersionBump.allCases, id: \.self) { bump in
                     Button {
                         bumpOverride = bump
                     } label: {
@@ -453,7 +446,7 @@ struct OllamaChatView: View {
                 Spacer(minLength: 0)
             }
 
-            ForEach(changelogSections(of: draft), id: \.title) { section in
+            ForEach(notes.sections) { section in
                 VStack(alignment: .leading, spacing: 4) {
                     Text(section.title)
                         .font(.system(size: 11, weight: .medium))
@@ -477,21 +470,11 @@ struct OllamaChatView: View {
         .padding(14)
     }
 
-    private func changelogSections(of draft: TagDraft) -> [ChangelogSection] {
-        [
-            ChangelogSection(title: "Added", entries: draft.added),
-            ChangelogSection(title: "Fixed", entries: draft.fixed),
-            ChangelogSection(title: "Performance", entries: draft.performance),
-            ChangelogSection(title: "Changed", entries: draft.changed),
-            ChangelogSection(title: "Other", entries: draft.other)
-        ].filter { !$0.entries.isEmpty }
-    }
-
     // MARK: - Work
 
     private func refresh() async {
         commitDraft = nil
-        tagDraft = nil
+        releaseNotes = nil
         bumpOverride = nil
         didAction = false
         feedback = nil
@@ -503,7 +486,7 @@ struct OllamaChatView: View {
         case .tag:
             let context = await gitService.commitsSinceLastTag()
             tagLastTag = context.lastTag
-            tagCommitLog = context.log
+            tagCommits = context.commits
         }
 
         guard !contextIsEmpty else { return }
@@ -540,12 +523,12 @@ struct OllamaChatView: View {
                 )
             case .tag:
                 let draft = try await client.complete(
-                    TagDraft.self,
+                    ReleaseNotesDraft.self,
                     messages: request,
-                    schema: TagDraft.jsonSchema
+                    schema: ReleaseNotesDraft.jsonSchema
                 )
-                tagDraft = draft
-                bumpOverride = suggestedBump(from: draft.bump)
+                releaseNotes = ReleaseNotes.build(commits: tagCommits, rewritten: draft.entries)
+                bumpOverride = suggestedBump(from: ReleaseNotes.bump(for: tagCommits))
             }
         } catch {
             lastError = (error as? OllamaError) ?? .connectionFailed
@@ -579,7 +562,7 @@ struct OllamaChatView: View {
     }
 
     private func performCreateTag() {
-        guard let tagDraft, let nextVersion, !isPerformingAction else { return }
+        guard let releaseNotes, let nextVersion, !isPerformingAction else { return }
         isPerformingAction = true
 
         Task {
@@ -587,7 +570,7 @@ struct OllamaChatView: View {
             do {
                 try await gitService.createAnnotatedTag(
                     name: nextVersion.tagName,
-                    message: tagDraft.changelog
+                    message: releaseNotes.markdown
                 )
                 didAction = true
                 feedback = Feedback(text: "Created tag \(nextVersion.tagName)", isError: false)
@@ -640,29 +623,26 @@ struct OllamaChatView: View {
     }
 
     private var tagSystemPrompt: String {
-        let baseVersion = tagLastTag ?? "none (this is the first release)"
+        let numbered = tagCommits
+            .enumerated()
+            .map { index, commit in "\(index + 1). \(commit.subject)" }
+            .joined(separator: "\n")
+
         return """
         ROLE
-        You turn a list of commit subjects into a release changelog. Your answer is returned as JSON matching a fixed schema — never write prose outside the fields.
+        You rewrite git commit subjects into release note entries. Your answer is returned as JSON matching a fixed schema — never write prose outside the fields.
 
-        The version number is computed by the application, not by you. You only decide how large the bump is.
+        You do not classify anything and you do not decide the version. The application already knows the type of every commit from its prefix and computes the version itself. Your only job is wording.
 
-        FIELD RULES
-        - bump:
-          - "major" if any commit carries a "BREAKING CHANGE:" footer or a "!" after the type/scope (e.g. "feat!:").
-          - otherwise "minor" if at least one commit has type "feat".
-          - otherwise "patch".
-          Multiple breaking changes in the same range still produce a single bump.
-        - added: one entry per "feat" commit.
-        - fixed: one entry per "fix" commit.
-        - performance: one entry per "perf" commit.
-        - changed: one entry per refactor/style/docs/build/ci/chore commit.
-        - other: one entry per revert or test-only commit.
+        RULES
+        - Return exactly \(tagCommits.count) \(tagCommits.count == 1 ? "entry" : "entries"), one per numbered commit below, in the same order.
+        - Never merge two commits into one entry, never drop one, never add one.
+        - Each entry is a single sentence in plain language, imperative mood, understandable to someone who has not read the code.
+        - Drop the conventional-commit prefix and scope; keep only the meaning.
+        - Do not invent changes that are not in the list, and do not restate a subject verbatim if it is cryptic — explain it.
 
-        Entries are plain language and imperative, in commit order (oldest first). Never merge two commits into one entry. If a commit subject is cryptic, rewrite it so a user understands it. Leave an array empty when no commit matches it.
-
-        COMMITS SINCE \(baseVersion)
-        \(tagCommitLog)
+        COMMITS (oldest first)
+        \(numbered)
         """
     }
 }

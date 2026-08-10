@@ -60,49 +60,137 @@ struct CommitDraft: Decodable {
     }
 }
 
-struct TagDraft: Decodable {
-    enum Bump: String, Decodable, CaseIterable, Hashable {
-        case major, minor, patch
-    }
+enum VersionBump: String, CaseIterable, Hashable {
+    case major
+    case minor
+    case patch
+}
 
-    let bump: Bump
-    let added: [String]
-    let fixed: [String]
-    let performance: [String]
-    let changed: [String]
-    let other: [String]
+/// A commit subject decomposed according to the Conventional Commits grammar.
+/// The prefix already encodes the classification, so nothing about it needs to
+/// be inferred by a language model.
+struct ParsedCommit: Equatable {
+    let subject: String
+    let type: CommitType?
+    let scope: String?
+    let description: String
+    let isBreaking: Bool
+
+    private static let grammar: NSRegularExpression = {
+        // <type>[(<scope>)][!]: <description>
+        try! NSRegularExpression(pattern: #"^([a-zA-Z]+)(?:\(([^)]*)\))?(!)?:\s*(.+)$"#)
+    }()
+
+    static func parse(subject: String, body: String = "") -> ParsedCommit {
+        let trimmed = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        let breakingFooter = body.contains("BREAKING CHANGE")
+
+        let range = NSRange(trimmed.startIndex..., in: trimmed)
+        guard let match = Self.grammar.firstMatch(in: trimmed, range: range) else {
+            return ParsedCommit(
+                subject: trimmed,
+                type: nil,
+                scope: nil,
+                description: trimmed,
+                isBreaking: breakingFooter
+            )
+        }
+
+        func group(_ index: Int) -> String? {
+            guard let range = Range(match.range(at: index), in: trimmed) else { return nil }
+            return String(trimmed[range])
+        }
+
+        return ParsedCommit(
+            subject: trimmed,
+            type: group(1).map { $0.lowercased() }.flatMap(CommitType.init(rawValue:)),
+            scope: group(2),
+            description: group(4) ?? trimmed,
+            isBreaking: group(3) != nil || breakingFooter
+        )
+    }
+}
+
+enum ChangelogCategory: String, CaseIterable {
+    case added = "Added"
+    case fixed = "Fixed"
+    case performance = "Performance"
+    case changed = "Changed"
+    case other = "Other"
+
+    static func category(for type: CommitType?) -> ChangelogCategory {
+        switch type {
+        case .feat: return .added
+        case .fix: return .fixed
+        case .perf: return .performance
+        case .refactor, .style, .docs, .build, .ci, .chore: return .changed
+        case .revert, .test, .none: return .other
+        }
+    }
+}
+
+struct ChangelogSection: Equatable, Identifiable {
+    let category: ChangelogCategory
+    let entries: [String]
+
+    var id: String { category.rawValue }
+    var title: String { category.rawValue }
+}
+
+/// What the model is asked for: one readable sentence per commit, nothing else.
+struct ReleaseNotesDraft: Decodable {
+    let entries: [String]
 
     static let jsonSchema: [String: Any] = [
         "type": "object",
         "properties": [
-            "bump": ["type": "string", "enum": ["major", "minor", "patch"]],
-            "added": ["type": "array", "items": ["type": "string"]],
-            "fixed": ["type": "array", "items": ["type": "string"]],
-            "performance": ["type": "array", "items": ["type": "string"]],
-            "changed": ["type": "array", "items": ["type": "string"]],
-            "other": ["type": "array", "items": ["type": "string"]]
+            "entries": ["type": "array", "items": ["type": "string"]]
         ],
-        "required": ["bump", "added", "fixed", "performance", "changed", "other"]
+        "required": ["entries"]
     ]
+}
 
-    var changelog: String {
-        let sections: [(heading: String, entries: [String])] = [
-            ("### Added", added),
-            ("### Fixed", fixed),
-            ("### Performance", performance),
-            ("### Changed", changed),
-            ("### Other", other)
-        ]
+struct ReleaseNotes: Equatable {
+    let sections: [ChangelogSection]
 
-        let rendered = sections
-            .filter { !$0.entries.isEmpty }
+    var markdown: String {
+        guard !sections.isEmpty else { return "No user-facing changes in this release." }
+
+        return sections
             .map { section in
-                ([section.heading] + section.entries.map { "- \($0)" }).joined(separator: "\n")
+                (["### \(section.title)"] + section.entries.map { "- \($0)" }).joined(separator: "\n")
             }
+            .joined(separator: "\n\n")
+    }
 
-        return rendered.isEmpty
-            ? "No user-facing changes in this release."
-            : rendered.joined(separator: "\n\n")
+    /// Groups rewritten entries by the type parsed from each commit. Falls back to the
+    /// raw commit descriptions when the model returns a different number of entries
+    /// than there are commits, which small models occasionally do.
+    static func build(commits: [ParsedCommit], rewritten: [String]) -> ReleaseNotes {
+        let texts = rewritten.count == commits.count
+            ? rewritten
+            : commits.map(\.description)
+
+        var buckets: [ChangelogCategory: [String]] = [:]
+
+        for (commit, text) in zip(commits, texts) {
+            let entry = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !entry.isEmpty else { continue }
+            buckets[ChangelogCategory.category(for: commit.type), default: []].append(entry)
+        }
+
+        let sections = ChangelogCategory.allCases.compactMap { category -> ChangelogSection? in
+            guard let entries = buckets[category], !entries.isEmpty else { return nil }
+            return ChangelogSection(category: category, entries: entries)
+        }
+
+        return ReleaseNotes(sections: sections)
+    }
+
+    static func bump(for commits: [ParsedCommit]) -> VersionBump {
+        if commits.contains(where: \.isBreaking) { return .major }
+        if commits.contains(where: { $0.type == .feat }) { return .minor }
+        return .patch
     }
 }
 
@@ -132,7 +220,7 @@ struct SemanticVersion: Equatable {
         self.init(major: major, minor: minor, patch: patch)
     }
 
-    func bumped(_ bump: TagDraft.Bump) -> SemanticVersion {
+    func bumped(_ bump: VersionBump) -> SemanticVersion {
         switch bump {
         case .major:
             return SemanticVersion(major: major + 1, minor: 0, patch: 0)
@@ -143,7 +231,7 @@ struct SemanticVersion: Equatable {
         }
     }
 
-    static func next(after lastTag: String?, bump: TagDraft.Bump) -> SemanticVersion {
+    static func next(after lastTag: String?, bump: VersionBump) -> SemanticVersion {
         guard let lastTag, let current = SemanticVersion(tag: lastTag) else {
             return SemanticVersion(major: 0, minor: 1, patch: 0)
         }
