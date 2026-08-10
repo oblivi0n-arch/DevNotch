@@ -327,86 +327,118 @@ final class GitStatusService: ObservableObject {
 
         return (true, ahead, behind)
     }
+    
+    // MARK: - Queue bridging
 
-    func stagedDiff() -> String {
-        guard let path = currentRepoPath else { return "" }
-        return run("git diff --staged", at: path)
+    private func onGitQueue<T>(_ work: @escaping () -> T) async -> T {
+        await withCheckedContinuation { continuation in
+            gitQueue.async {
+                continuation.resume(returning: work())
+            }
+        }
     }
 
-    func stageAll() {
-        guard let path = currentRepoPath else { return }
-        _ = run("git add -A", at: path)
-        scheduleRefresh()
+    private func onGitQueueThrowing<T>(_ work: @escaping () throws -> T) async throws -> T {
+        try await withCheckedThrowingContinuation { continuation in
+            gitQueue.async {
+                do {
+                    continuation.resume(returning: try work())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func stagedDiff() async -> String {
+        await onGitQueue {
+            guard let path = self.currentRepoPath else { return "" }
+            return self.run("git diff --staged", at: path)
+        }
+    }
+
+    func stageAll() async {
+        await onGitQueue {
+            guard let path = self.currentRepoPath else { return }
+            _ = self.run("git add -A", at: path)
+            self.scheduleRefresh()
+        }
     }
 
     @discardableResult
-    func commit(message: String) throws -> String {
-        guard let path = currentRepoPath else {
-            throw GitCommitError.noRepo
-        }
-        guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw GitCommitError.emptyMessage
-        }
+    func commit(message: String) async throws -> String {
+        try await onGitQueueThrowing {
+            guard let path = self.currentRepoPath else {
+                throw GitCommitError.noRepo
+            }
+            guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw GitCommitError.emptyMessage
+            }
 
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".txt")
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".txt")
 
-        do {
-            try message.write(to: tempURL, atomically: true, encoding: .utf8)
-        } catch {
-            throw GitCommitError.writeFailed
+            do {
+                try message.write(to: tempURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw GitCommitError.writeFailed
+            }
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let result = self.runResult("git commit -F \"\(tempURL.path)\"", at: path)
+            guard result.exitCode == 0 else {
+                throw GitCommitError.commitFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+            }
+
+            self.scheduleRefresh()
+            return result.output
         }
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let result = runResult("git commit -F \"\(tempURL.path)\"", at: path)
-        guard result.exitCode == 0 else {
-            throw GitCommitError.commitFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
-        }
-
-        scheduleRefresh()
-        return result.output
     }
 
-    func commitsSinceLastTag() -> (lastTag: String?, log: String) {
-        guard let path = currentRepoPath else { return (nil, "") }
+    func commitsSinceLastTag() async -> (lastTag: String?, log: String) {
+        await onGitQueue {
+            guard let path = self.currentRepoPath else { return (nil, "") }
 
-        let tag = run("git describe --tags --abbrev=0", at: path)
-        let range = tag.isEmpty ? "" : "\(tag)..HEAD"
-        let log = run("git log \(range) --pretty=format:%s", at: path)
+            let tag = self.run("git describe --tags --abbrev=0", at: path)
+            let range = tag.isEmpty ? "" : "\(tag)..HEAD"
+            let log = self.run("git log \(range) --pretty=format:%s", at: path)
 
-        return (tag.isEmpty ? nil : tag, log)
+            return (tag.isEmpty ? nil : tag, log)
+        }
     }
 
-    func createAnnotatedTag(name: String, message: String) throws {
-        guard let path = currentRepoPath else {
-            throw GitTagError.noRepo
+    func createAnnotatedTag(name: String, message: String) async throws {
+        try await onGitQueueThrowing {
+            guard let path = self.currentRepoPath else {
+                throw GitTagError.noRepo
+            }
+
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty else {
+                throw GitTagError.emptyName
+            }
+
+            let existing = self.run("git tag -l \(trimmedName)", at: path)
+            guard existing.isEmpty else {
+                throw GitTagError.tagExists(trimmedName)
+            }
+
+            let tempURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent(UUID().uuidString + ".txt")
+
+            do {
+                try message.write(to: tempURL, atomically: true, encoding: .utf8)
+            } catch {
+                throw GitTagError.writeFailed
+            }
+            defer { try? FileManager.default.removeItem(at: tempURL) }
+
+            let result = self.runResult("git tag -a \(trimmedName) -F \"\(tempURL.path)\"", at: path)
+            guard result.exitCode == 0 else {
+                throw GitTagError.tagFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
+            }
+
+            self.scheduleRefresh()
         }
-
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else {
-            throw GitTagError.emptyName
-        }
-
-        let existing = run("git tag -l \(trimmedName)", at: path)
-        guard existing.isEmpty else {
-            throw GitTagError.tagExists(trimmedName)
-        }
-
-        let tempURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent(UUID().uuidString + ".txt")
-
-        do {
-            try message.write(to: tempURL, atomically: true, encoding: .utf8)
-        } catch {
-            throw GitTagError.writeFailed
-        }
-        defer { try? FileManager.default.removeItem(at: tempURL) }
-
-        let result = runResult("git tag -a \(trimmedName) -F \"\(tempURL.path)\"", at: path)
-        guard result.exitCode == 0 else {
-            throw GitTagError.tagFailed(result.errorOutput.isEmpty ? result.output : result.errorOutput)
-        }
-
-        scheduleRefresh()
     }
 }

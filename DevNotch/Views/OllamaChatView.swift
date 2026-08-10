@@ -27,6 +27,7 @@ struct OllamaChatView: View {
     @State private var editingMessageId: UUID?
     @State private var editDraft: String = ""
     @State private var autoRetryCount = 0
+    @State private var isPerformingAction = false
 
     @FocusState private var isInputFocused: Bool
 
@@ -216,7 +217,7 @@ struct OllamaChatView: View {
                             systemImage: alreadyActioned ? "checkmark.circle.fill" : "checkmark.circle"
                         )
                     }
-                    .disabled(alreadyActioned)
+                    .disabled(alreadyActioned || isPerformingAction)
 
                     Spacer()
                 }
@@ -250,9 +251,11 @@ struct OllamaChatView: View {
             .background(.ultraThinMaterial)
         }
         .frame(width: 320, height: 420)
-        .onAppear(perform: loadContext)
+        .task {
+            await loadContext()
+        }
         .onChange(of: mode) {
-            loadContext()
+            Task { await loadContext() }
         }
     }
 
@@ -272,15 +275,16 @@ struct OllamaChatView: View {
         }
     }
 
-    private func loadContext() {
+    @MainActor
+    private func loadContext() async {
         switch mode {
         case .commit:
-            stagedDiff = gitService.stagedDiff()
+            stagedDiff = await gitService.stagedDiff()
             if !stagedDiff.isEmpty {
                 isInputFocused = true
             }
         case .tag:
-            let context = gitService.commitsSinceLastTag()
+            let context = await gitService.commitsSinceLastTag()
             tagLastTag = context.lastTag
             tagCommitLog = context.log
             if !tagCommitLog.isEmpty {
@@ -289,9 +293,12 @@ struct OllamaChatView: View {
         }
     }
 
+    @MainActor
     private func stageAll() {
-        gitService.stageAll()
-        loadContext()
+        Task {
+            await gitService.stageAll()
+            await loadContext()
+        }
     }
 
     private func send() {
@@ -588,21 +595,29 @@ struct OllamaChatView: View {
         .frame(maxWidth: .infinity)
     }
 
+    @MainActor
     private func performCommit(for message: ChatMessage) {
-        do {
-            try gitService.commit(message: message.content)
-            actionedMessageIds.insert(message.id)
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "✅ Committed successfully"))
-            }
-        } catch {
-            let reason = (error as? GitCommitError)?.errorDescription ?? error.localizedDescription
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "❌ Commit failed: \(reason)"))
+        guard !isPerformingAction else { return }
+        isPerformingAction = true
+
+        Task {
+            defer { isPerformingAction = false }
+            do {
+                try await gitService.commit(message: message.content)
+                actionedMessageIds.insert(message.id)
+                withAnimation(.easeOut(duration: 0.2)) {
+                    messages.append(ChatMessage(role: "system", content: "✅ Committed successfully"))
+                }
+            } catch {
+                let reason = (error as? GitCommitError)?.errorDescription ?? error.localizedDescription
+                withAnimation(.easeOut(duration: 0.2)) {
+                    messages.append(ChatMessage(role: "system", content: "❌ Commit failed: \(reason)"))
+                }
             }
         }
     }
 
+    @MainActor
     private func performCreateTag(for message: ChatMessage) {
         guard let parsed = parseTagOutput(message.content) else {
             withAnimation(.easeOut(duration: 0.2)) {
@@ -611,16 +626,22 @@ struct OllamaChatView: View {
             return
         }
 
-        do {
-            try gitService.createAnnotatedTag(name: parsed.name, message: parsed.message)
-            actionedMessageIds.insert(message.id)
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "✅ Created tag \(parsed.name)"))
-            }
-        } catch {
-            let reason = (error as? GitTagError)?.errorDescription ?? error.localizedDescription
-            withAnimation(.easeOut(duration: 0.2)) {
-                messages.append(ChatMessage(role: "system", content: "❌ Tag creation failed: \(reason)"))
+        guard !isPerformingAction else { return }
+        isPerformingAction = true
+
+        Task {
+            defer { isPerformingAction = false }
+            do {
+                try await gitService.createAnnotatedTag(name: parsed.name, message: parsed.message)
+                actionedMessageIds.insert(message.id)
+                withAnimation(.easeOut(duration: 0.2)) {
+                    messages.append(ChatMessage(role: "system", content: "✅ Created tag \(parsed.name)"))
+                }
+            } catch {
+                let reason = (error as? GitTagError)?.errorDescription ?? error.localizedDescription
+                withAnimation(.easeOut(duration: 0.2)) {
+                    messages.append(ChatMessage(role: "system", content: "❌ Tag creation failed: \(reason)"))
+                }
             }
         }
     }
