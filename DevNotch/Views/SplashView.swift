@@ -37,6 +37,10 @@ struct SplashView: View {
                 Text("v\(appVersion)")
                     .font(.system(size: 11, weight: .regular, design: .rounded))
                     .foregroundColor(.white.opacity(0.6))
+
+                Text("built by: @oblivi0n-arch, @M0rton45")
+                    .font(.system(size: 10, weight: .regular, design: .rounded))
+                    .foregroundColor(.white.opacity(0.45))
             }
             .opacity(isExpanded ? 1 : 0)
         )
