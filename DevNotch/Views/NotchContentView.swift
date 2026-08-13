@@ -284,9 +284,18 @@ struct NotchContentView: View {
     
     private var capsule: some View {
         ZStack {
-            Color.black
+            
+            Rectangle()
+                .fill(.ultraThinMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius))
+            .overlay(
+                RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius)
+                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+            )
             
             if isExpanded {
+                Color.black
+//                .allowsHitTesting(false)
                 expandedContent
                     .transition(
                         .asymmetric(
@@ -314,7 +323,8 @@ struct NotchContentView: View {
         .clipShape(RoundedRectangle(cornerRadius: isExpanded ? expandedCornerRadius : collapsedCornerRadius))
         .shadow(color: .black.opacity(shadowOpacity), radius: shadowOpacity > 0 ? 14 : 0, y: 4)
         .animation(.spring(response: 0.34, dampingFraction: 0.78), value: isExpanded)
-        .allowsHitTesting(false)
+//        klikanie za okienkiem
+        .allowsHitTesting(true)
     }
     
     private func scheduleHoverChange(to hovering: Bool) {
