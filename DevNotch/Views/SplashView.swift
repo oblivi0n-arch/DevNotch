@@ -38,7 +38,7 @@ struct SplashView: View {
                     .font(.system(size: 11, weight: .regular, design: .rounded))
                     .foregroundColor(.white.opacity(0.6))
 
-                Text("built by: @oblivi0n-arch, @M0rton45")
+                Text("developed by: @oblivi0n-arch")
                     .font(.system(size: 10, weight: .regular, design: .rounded))
                     .foregroundColor(.white.opacity(0.45))
             }
