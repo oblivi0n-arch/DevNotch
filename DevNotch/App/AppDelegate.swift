@@ -206,6 +206,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             settings.title = "DevNotch Settings"
             settings.styleMask = [.titled, .closable]
             settings.isReleasedWhenClosed = false
+            settings.isOpaque = false
+            settings.backgroundColor = .clear
+            settings.titleVisibility = .visible
+            settings.hasShadow = true
+            settings.isMovableByWindowBackground = true
+
             settings.center()
 
             settingsWindow = settings
@@ -214,7 +220,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
-
+    
     // MARK: - Popover
 
     private func togglePopover() {
