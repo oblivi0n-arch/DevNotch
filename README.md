@@ -25,8 +25,8 @@ On top of that, it ships a built-in AI assistant (powered by local [Ollama](http
 
 - macOS 26.5+ (Tahoe) — per `MACOSX_DEPLOYMENT_TARGET` in the project
 - Xcode 26.6+ to build
-- [Ollama](https://ollama.com) installed locally (optional — only needed for the AI features)
-  - default model: `qwen2.5-coder:7b` (configurable in Settings)
+- [Ollama](https://ollama.com) installed locally (optional, but crucial — needed for the AI features)
+  - default model: `qwen2.5-coder:7b`
 
 ## 🚀 Installation
 
