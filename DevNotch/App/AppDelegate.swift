@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
 
     private var settingsWindow: NSWindow?
+    private var aboutWindow: NSWindow?
 
     private var ollamaIdleTimer: Timer?
     private let ollamaIdleTimeout: TimeInterval = 5 * 60
@@ -175,6 +176,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let aboutItem = NSMenuItem(title: "About", action: #selector(showAbout), keyEquivalent: "")
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         menu.addItem(quitItem)
@@ -182,6 +187,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
         statusItem.button?.performClick(nil)
         statusItem.menu = nil
+    }
+    
+    @objc private func showAbout() {
+        if aboutWindow == nil {
+            let hosting = NSHostingController(rootView: AboutView())
+
+            let about = NSWindow(contentViewController: hosting)
+            about.title = "About DevNotch"
+            about.styleMask = [.titled, .closable]
+            about.isReleasedWhenClosed = false
+            about.center()
+
+            aboutWindow = about
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        aboutWindow?.makeKeyAndOrderFront(nil)
     }
 
     @objc private func lookForActiveRepo() {
