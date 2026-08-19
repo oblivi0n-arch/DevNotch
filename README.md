@@ -6,7 +6,7 @@ On top of that, it ships a built-in AI assistant (powered by local [Ollama](http
 
 ![platform](https://img.shields.io/badge/platform-macOS-black)
 ![swift](https://img.shields.io/badge/Swift-5-orange)
-![license](https://img.shields.io/badge/license-GPLv3-blue)
+![license](https://img.shields.io/badge/license-All%20rights%20reserved-lightgrey)
 
 ---
 
@@ -25,8 +25,8 @@ On top of that, it ships a built-in AI assistant (powered by local [Ollama](http
 
 - macOS 26.5+ (Tahoe) — per `MACOSX_DEPLOYMENT_TARGET` in the project
 - Xcode 26.6+ to build
-- [Ollama](https://ollama.com) installed locally (optional, but crucial — needed for the AI features)
-  - default model: `qwen2.5-coder:7b`
+- [Ollama](https://ollama.com) installed locally (optional, but crucial — only needed for the AI features)
+  - default model: `qwen2.5-coder:7b` (configurable in Settings)
 
 ## 🚀 Installation
 
@@ -80,8 +80,12 @@ A few technical notes:
 
 ## 📄 License
 
-This project is licensed under the **GNU General Public License v3.0**. See the [`LICENSE`](LICENSE) file for details.
+This repository is source-available, not open source: no license is granted. All rights reserved.
+
+You're welcome to read the code, fork it for personal reference, and open pull requests. Redistribution, commercial use, or shipping a product based on this code is not permitted without prior written permission from the author.
 
 ## 🙌 Contributing
 
 Pull requests are welcome. The contributor list is fetched automatically from the GitHub API and shown in the app's "About" window.
+
+By submitting a pull request, you agree that your contribution may be used and relicensed by the project owner.
