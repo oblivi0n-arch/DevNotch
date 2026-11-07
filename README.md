@@ -67,3 +67,7 @@ DevNotch/
 - The status refreshes through **FSEvents** watching `.git`, with no polling.
 - Terminal's working directory is read straight from the shell process (`proc_pidinfo` / `PROC_PIDVNODEPATHINFO`), not through AppleScript.
 - `git fetch --prune` runs in the background every 180 s on its own queue, with a watchdog for timeouts.
+
+## License
+
+MIT. Take the code and do what you like with it. The project is archived, so there's no support and pull requests aren't accepted.
